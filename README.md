@@ -141,20 +141,20 @@ Woodland creates the following configuration file:
 	idle_timeout = 0 disables the timeout.
 	idle_timeout = 180000
 
-  3. Background image
+  2. Background image
 
 	[ Background ]
 	Provide the full path to the image.
 	background = /home/username/image.png
 
-  5. Keyboard layouts
+  3. Keyboard layouts
 
 	[ Keyboard layouts ]
 	Alt+Shift to switch layouts
 	e.g: xkb_layouts=us,de
 	xkb_layouts=us,de
 
-  7. Keyboard shortcuts
+  4. Keyboard shortcuts
 
 	[ Keyboard Shortcuts ]
 	Modifiers names:
@@ -174,7 +174,7 @@ Woodland creates the following configuration file:
 	binding_thunar = WLR_MODIFIER_LOGO XKB_KEY_f
 	command_thunar = thunar
 
-  9. Window placement
+  5. Window placement
 
 	[ Window Placement ]
 	Open specified windows at the given fixed position.
@@ -191,7 +191,7 @@ Woodland creates the following configuration file:
 	Placing thunar
 	window_place = app_id: thunar -15 -15
 
-  11. Zoom
+  6. Zoom
 
 	[ Zoom ]
 	Zooming is activated by pressing super key and scrolling.
@@ -202,7 +202,7 @@ Woodland creates the following configuration file:
 	zoom_top_edge = enabled
 	zoom_edge_threshold = 30
 
-  13. Autostart applications
+  7. Autostart applications
 
   	[ Startup ]
 	Specify the startup commands.
