@@ -26,11 +26,17 @@ It was tested on Debian 12.
 # Special thanks to all the developers, maintainers and contributors of the following projects:
 
 sway
+
 labwc
+
 tinywl
+
 waybox
+
 wayfire
+
 wlroots
+
 vivarium
 
 and also to all open-source enthusiasts in general.
