@@ -2,12 +2,19 @@
 
 # Woodland
 
-Woodland is a minimal lightweight wlroots-based window-stacking compositor for wayland, inspired
-Wayfire and TinyWl. For a minimal desktop environment experience you can use it together with:
+Woodland is a minimal lightweight wlroots-based window-stacking compositor for Wayland, inspired
+by Wayfire and TinyWl. For a minimal desktop environment experience you can use it together with:
 
+Panel:
 [diowpanel](https://github.com/DiogenesN/diowpanel)
+
+Menu:
 [diowmenu](https://github.com/DiogenesN/diowmenu)
+
+Window list:
 [diowwindowlist](https://github.com/DiogenesN/diowwindowlist)
+
+Application launcher:
 [diowapplauncher](https://github.com/DiogenesN/diowapplauncher)
 
 Woodland has no reliance on any particular Desktop Environment, Desktop Shell or session.
@@ -21,8 +28,10 @@ It was tested on Debian 12.
 sway
 labwc
 tinywl
+waybox
 wayfire
 wlroots
+vivarium
 
 and also to all open-source enthusiasts in general.
 
