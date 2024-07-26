@@ -60,16 +60,16 @@ and also to all open-source enthusiasts in general.
 
   1. To build the project you need to install the following libs:
 
-		make
-		pkgconf
-		libstb-dev
-		libdrm-dev
-		libgles-dev
-		libinput-dev
-		libwayland-dev
-		libwlroots-dev
-		libpixman-1-dev
-		libxkbcommon-dev
+		 make
+		 pkgconf
+		 libstb-dev
+		 libdrm-dev
+		 libgles-dev
+		 libinput-dev
+		 libwayland-dev
+		 libwlroots-dev
+		 libpixman-1-dev
+		 libxkbcommon-dev
 
   2. Open a terminal and run:
  
@@ -136,41 +136,41 @@ Woodland creates the following configuration file:
   1. Idle
  
 		[ Idle ]
-		# The timeout in milliseconds until the system is considered idle.
-		# One minute is 60000 milliseconds.
-		# idle_timeout = 0 disables the timeout.
+		The timeout in milliseconds until the system is considered idle.
+		One minute is 60000 milliseconds.
+		idle_timeout = 0 disables the timeout.
 		idle_timeout = 180000
 
   2. Background image
 
 		[ Background ]
-		# Provide the full path to the image.
+		Provide the full path to the image.
 		background = /home/username/image.png
 
   3. Keyboard layouts
 
 		[ Keyboard layouts ]
-		# Alt+Shift to switch layouts
-		# e.g: xkb_layouts=us,de
+		Alt+Shift to switch layouts
+		e.g: xkb_layouts=us,de
 		xkb_layouts=us,de
 
   4. Keyboard shortcuts
 
 		[ Keyboard Shortcuts ]
-		# Modifiers names:
-		# WLR_MODIFIER_ALT
-		# WLR_MODIFIER_CTRL
-		# WLR_MODIFIER_SHIFT
-		# WLR_MODIFIER_LOGO (Super key)
-		#
-		# Key names here: /usr/include/xkbcommon/xkbcommon-keysyms.h
-		#
-		# Default shortcuts:
-		# <Super+Esc> to log out
-		# <Super+x> to close the current window
-		# <Alt+Tab> to switch to the next window
-		# Example of user defined shortcuts:
-		# NOTE: You have to preserve binding_ and command_ prefixes.
+		Modifiers names:
+		WLR_MODIFIER_ALT
+		WLR_MODIFIER_CTRL
+		WLR_MODIFIER_SHIFT
+		WLR_MODIFIER_LOGO (Super key)
+		
+		Key names here: /usr/include/xkbcommon/xkbcommon-keysyms.h
+		
+		Default shortcuts:
+		<Super+Esc> to log out
+		<Super+x> to close the current window
+		<Alt+Tab> to switch to the next window
+		Example of user defined shortcuts:
+		NOTE: You have to preserve binding_ and command_ prefixes.
 		binding_thunar = WLR_MODIFIER_LOGO XKB_KEY_f
 		command_thunar = thunar
 
@@ -178,27 +178,27 @@ Woodland creates the following configuration file:
   5. Window placement
 
 		[ Window Placement ]
-		# Open specified windows at the given fixed position.
-		# to get the title and/or app_id, use wlrctl tool.
-		# The placement model is as follows:
-		# (declaration) window_place = (keyword) app_id: (app id) app_id (number) x (number) y
-		# (declaration) window_place = (keyword) title: (title) title (number) x (number) y
-		# Example of how to make 'thunar' start at position x=100 y=100:
+		Open specified windows at the given fixed position.
+		to get the title and/or app_id, use wlrctl tool.
+		The placement model is as follows:
+		(declaration) window_place = (keyword) app_id: (app id) app_id (number) x (number) y
+		(declaration) window_place = (keyword) title: (title) title (number) x (number) y
+		Example of how to make 'thunar' start at position x=100 y=100:
 		#window_place = app_id: thunar 100 100 (places thunar at x=100 y=100)
-		# or
+		or
 		#window_place = title: "some title" 100 100 (places window containing title at x=100 y=100)
-		# NOTE: Titles with spaces must be put between double quotes: e.g "New Document"
+		NOTE: Titles with spaces must be put between double quotes: e.g "New Document"
 
-		# Placing thunar
+		Placing thunar
 		window_place = app_id: thunar -15 -15
 
   6. Zoom
 
 		[ Zoom ]
-		# Zooming is activated by pressing super key and scrolling.
-		# zoom_speed defines how fast zooming area is moving around.
-		# zoom_edge_threshold defines the distance from the edges to start panning.
-		# zoom_top_edge if 'enabled' then you can scroll on the left top edge to zoom.
+		Zooming is activated by pressing super key and scrolling.
+		zoom_speed defines how fast zooming area is moving around.
+		zoom_edge_threshold defines the distance from the edges to start panning.
+		zoom_top_edge if 'enabled' then you can scroll on the left top edge to zoom.
 		zoom_speed = 5
 		zoom_top_edge = enabled
 		zoom_edge_threshold = 30
@@ -206,14 +206,14 @@ Woodland creates the following configuration file:
   7. Autostart applications
 
   		[ Startup ]
-		# Specify the startup commands.
-		# If no startup command is specified then
-		# it will automatically look for the following terminals:
-		# foot, xfce4-terminal, kitty, gnome-terminal, alacritty.
-		# Example (automatically start thunar and foot):
-		# NOTE: the line must start with startup_command
+		Specify the startup commands.
+		If no startup command is specified then
+		it will automatically look for the following terminals:
+		foot, xfce4-terminal, kitty, gnome-terminal, alacritty.
+		Example (automatically start thunar and foot):
+		NOTE: the line must start with startup_command
 
-		# My startup applications:
+		My startup applications:
 		startup_command = mako
 		startup_command = polari
 		startup_command = diowmenu
