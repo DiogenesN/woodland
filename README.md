@@ -137,10 +137,10 @@ Woodland creates the following configuration file:
  
 		[ Idle ]
 
-		The timeout in milliseconds until the system is considered idle.
-		One minute is 60000 milliseconds.
-		idle_timeout = 0 disables the timeout.
-		idle_timeout = 180000
+	The timeout in milliseconds until the system is considered idle.
+	One minute is 60000 milliseconds.
+	idle_timeout = 0 disables the timeout.
+	idle_timeout = 180000
 
   3. Background image
 
