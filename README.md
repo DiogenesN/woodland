@@ -136,27 +136,31 @@ Woodland creates the following configuration file:
   1. Idle
  
 		[ Idle ]
+
 		The timeout in milliseconds until the system is considered idle.
 		One minute is 60000 milliseconds.
 		idle_timeout = 0 disables the timeout.
 		idle_timeout = 180000
 
-  2. Background image
+  3. Background image
 
 		[ Background ]
+
 		Provide the full path to the image.
 		background = /home/username/image.png
 
-  3. Keyboard layouts
+  5. Keyboard layouts
 
 		[ Keyboard layouts ]
+
 		Alt+Shift to switch layouts
 		e.g: xkb_layouts=us,de
 		xkb_layouts=us,de
 
-  4. Keyboard shortcuts
+  7. Keyboard shortcuts
 
 		[ Keyboard Shortcuts ]
+
 		Modifiers names:
 		WLR_MODIFIER_ALT
 		WLR_MODIFIER_CTRL
@@ -175,9 +179,10 @@ Woodland creates the following configuration file:
 		command_thunar = thunar
 
 
-  5. Window placement
+  9. Window placement
 
 		[ Window Placement ]
+
 		Open specified windows at the given fixed position.
 		to get the title and/or app_id, use wlrctl tool.
 		The placement model is as follows:
@@ -192,9 +197,10 @@ Woodland creates the following configuration file:
 		Placing thunar
 		window_place = app_id: thunar -15 -15
 
-  6. Zoom
+  11. Zoom
 
 		[ Zoom ]
+
 		Zooming is activated by pressing super key and scrolling.
 		zoom_speed defines how fast zooming area is moving around.
 		zoom_edge_threshold defines the distance from the edges to start panning.
@@ -203,9 +209,10 @@ Woodland creates the following configuration file:
 		zoom_top_edge = enabled
 		zoom_edge_threshold = 30
 
-  7. Autostart applications
+  13. Autostart applications
 
   		[ Startup ]
+
 		Specify the startup commands.
 		If no startup command is specified then
 		it will automatically look for the following terminals:
