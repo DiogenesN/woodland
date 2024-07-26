@@ -84,11 +84,12 @@ and also to all open-source enthusiasts in general.
 		 (if you just want to test it then run: make run)
 ## Tips
 
-If wlroots complains about missing header files then copy the header files from 'include' directory to '/usr/include/wlr/types/'
-If wlroots complains about missing 'pixman' header files then add #include <pixman-1/pixman.h> to:
-	/usr/include/wlr/types/buffer.h
-	/usr/include/wlr/types/wlr_scene.h
-	/usr/include/wlr/types/wlr_surface.h
+  If wlroots complains about missing header files then copy the header files from 'include' directory to '/usr/include/wlr/types/'
+  If wlroots complains about missing 'pixman' header files then add #include <pixman-1/pixman.h> to:
+
+    /usr/include/wlr/types/buffer.h
+    /usr/include/wlr/types/wlr_scene.h
+    /usr/include/wlr/types/wlr_surface.h
 		
 # Usage
 
