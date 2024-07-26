@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+CC = gcc
+CFLAGS = -Wall -flto -Wextra -Wpedantic -march=native -funroll-loops -export-dynamic -fomit-frame-pointer
+LDFLAGS = -lm
+LDFLAGS += $(shell pkg-config --libs stb libdrm glesv2 wlroots libinput pixman-1 xkbcommon wayland-server)
+CFLAGS += $(shell pkg-config --cflags stb libdrm glesv2 wlroots libinput pixman-1 xkbcommon wayland-server)
+CFLAGS += -Isrc/
+CFLAGS += -DWLR_USE_UNSTABLE
+SRCFILES = src/getxkbkeyname.c src/getvaluefromconf.c src/runcmd.c src/woodland.c
+OBJFILES = $(patsubst src/%.c, %.o, $(SRCFILES))
+TARGET = woodland
+PREFIX = /usr/local
+BINDIR = $(PREFIX)/bin
+
+all: $(TARGET)
+
+$(TARGET): $(OBJFILES)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	@echo "\nSuccessfully built $(TARGET)!\nType 'make run' to test or 'sudo make install' to install."
+
+%.o: src/%.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+.PHONY: run
+
+run: $(TARGET)
+	@echo
+	@echo "_________________________________________________________________________________________________________"
+	@echo
+	@echo "'"$(TARGET)"'" output is:
+	@echo "_________________________________________________________________________________________________________"
+	@echo
+	sleep 1
+	@./$(TARGET)
+
+install: $(TARGET)
+	install -d $(DESTDIR)$(BINDIR)
+	install -m 755 $(TARGET) $(DESTDIR)$(BINDIR)
+
+clean:
+	rm -f $(OBJFILES) $(TARGET)
+
+uninstall:
+	rm -f $(DESTDIR)$(BINDIR)/$(TARGET)
