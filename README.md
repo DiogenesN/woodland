@@ -25,6 +25,8 @@ It was tested on Debian 12.
 
 # Special thanks to all the developers, maintainers and contributors of the following projects:
 
+dwl
+
 sway
 
 labwc
