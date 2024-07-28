@@ -2110,7 +2110,7 @@ static void _xdg_surface_destroy(struct wl_listener *listener, void *data) {
 		wl_list_for_each_reverse(iter, &server->views, link) {
 			if (iter && iter != view) {
 				prev_view = iter;
-				break;
+				///break;
 			}
 		}
 	}
