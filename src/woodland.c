@@ -399,7 +399,8 @@ static void seat_request_start_drag(struct wl_listener *listener, void *data) {
 		return;
 	}
 
-	wlr_log(WLR_ERROR, "Ignoring request_start_drag, could not validate pointer serial %d", event->serial);
+	wlr_log(WLR_ERROR, "Ignoring request_start_drag, could not validate pointer serial %d",
+																			event->serial);
 	if (event->drag != NULL && event->drag->source != NULL) {
 		wlr_data_source_destroy(event->drag->source);
 	}
@@ -1431,7 +1432,7 @@ static void server_cursor_motion(struct wl_listener *listener, void *data) {
 	 * special configuration applied for the specific input device which
 	 * generated the event. You can pass NULL for the device if you want to move
 	 * the cursor around without any input. */
-	wlr_cursor_move(server->cursor, NULL, event->delta_x, event->delta_y);
+	wlr_cursor_move(server->cursor, event->device, event->delta_x, event->delta_y);
 	process_cursor_motion(server, event->time_msec);
 	// Update pan offset based on the current cursor position
 
@@ -1458,7 +1459,7 @@ static void server_cursor_motion_absolute(struct wl_listener *listener, void *da
 		wlr_log(WLR_ERROR, "Error: 'server' is NULL in 'server_cursor_motion_absolute'!");
 		return;
 	}
-    wlr_cursor_warp_absolute(server->cursor, NULL, event->x, event->y);
+    wlr_cursor_warp_absolute(server->cursor, event->device, event->x, event->y);
     process_cursor_motion(server, event->time_msec);
 }
 
@@ -2191,7 +2192,6 @@ static void _xdg_surface_destroy(struct wl_listener *listener, void *data) {
 	wlr_log(WLR_INFO, "XDG surface destroyed!");
 }
 
-
 static void handle_foreign_toplevel_destroy(struct wl_listener *listener, void *data) {
 	(void)data;
 	wlr_log(WLR_INFO, "Foreign handle destroying...");
@@ -2824,9 +2824,25 @@ static void server_new_xdg_surface(struct wl_listener *listener, void *data) {
 		wlr_log(WLR_ERROR, "Error: Empty 'server' in 'server_new_xdg_surface'!");
 		return;
 	}
+	struct wlr_output *output = wlr_output_layout_output_at(server->output_layout,
+																server->cursor->x,
+																server->cursor->y);
+	if ((!output) || (output == NULL)) {
+		wlr_log(WLR_ERROR, "Error: Empty 'output' in 'server_new_xdg_surface'!");
+		return;
+	}
 
 	if (xdg_surface->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL) {
 		wlr_log(WLR_ERROR, "Current surface is not XDG toplevel, skipping.");
+		// Fix popups opening beyond output size
+		if (xdg_surface->role == WLR_XDG_SURFACE_ROLE_POPUP) {
+			struct wlr_box box;
+			box.x = 0;
+			box.y = 0;
+			box.width = output->width;
+			box.height = output->height;
+			wlr_xdg_popup_unconstrain_from_box(xdg_surface->popup, &box);
+		}
 		return;
 	}
 	/* Allocate a woodland_view for this surface */
