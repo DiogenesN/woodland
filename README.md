@@ -20,7 +20,7 @@ Application launcher:
 Woodland has no reliance on any particular Desktop Environment, Desktop Shell or session.
 Also it does not depend on any UI toolkits such as Qt or GTK.
 
-The main goal of Woodland is to provide basic functionality, ease of use and keeoing things simple.
+The main goal of Woodland is to provide basic functionality, ease of use and keeping things simple.
 It was tested on Debian 12.
 
 # Special thanks to all the developers, maintainers and contributors of the following projects:
