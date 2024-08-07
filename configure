@@ -1,0 +1,82 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+set -e
+
+if which pkgconf > /dev/null; then
+    echo "pkg-config found."
+else
+    echo "Error: 'pkgconf' not found. Please install the library."
+    exit 1
+fi
+
+if which make > /dev/null; then
+    echo "make found."
+else
+    echo "Error: 'make' not found. Please install the library."
+    exit 1
+fi
+
+if pkg-config --exists stb; then
+    echo "stb found."
+else
+    echo "Error: 'libstb-dev' not found. Please install the library."
+    exit 1
+fi
+
+if pkg-config --exists libdrm; then
+    echo "libdrm found."
+else
+    echo "Error: 'libdrm-dev' not found. Please install the library."
+    exit 1
+fi
+
+if pkg-config --exists glesv2; then
+    echo "glesv2 found."
+else
+    echo "Error: 'libgles-dev' not found. Please install the library."
+    exit 1
+fi
+
+if pkg-config --exists wlroots; then
+    echo "wlroots found."
+else
+    echo "Error: 'libwlroots-dev' not found. Please install the library."
+    exit 1
+fi
+
+if pkg-config --exists libinput; then
+    echo "libinput found."
+else
+    echo "Error: 'libinput-dev' not found. Please install the library."
+    exit 1
+fi
+
+if pkg-config --exists pixman-1; then
+    echo "pixman-1 found."
+else
+    echo "Error: 'libpixman-1-dev' not found. Please install the library."
+    exit 1
+fi
+
+if pkg-config --exists xkbcommon; then
+    echo "xkbcommon found."
+else
+    echo "Error: 'libxkbcommon-dev' not found. Please install the library."
+    exit 1
+fi
+
+if pkg-config --exists wayland-server; then
+    echo "wayland-server found."
+else
+    echo "Error: 'libwayland-dev' not found. Please install the library."
+    exit 1
+fi
+
+cp Makefile.in Makefile
+
+echo ""
+echo "All done!"
+echo ""
+echo "Type 'make' to build the project."
+
+exit 0
