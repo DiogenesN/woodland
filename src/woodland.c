@@ -37,6 +37,7 @@
 #include <wlr/types/wlr_idle.h>
 #include <xkbcommon/xkbcommon.h>
 #include <wayland-server-core.h>
+#include <wlr/backend/session.h>
 #include <wlr/backend/libinput.h>
 #include <wlr/render/allocator.h>
 #include <wlr/types/wlr_matrix.h>
@@ -182,6 +183,10 @@ struct woodland_view {
 	struct wlr_foreign_toplevel_handle_v1 *foreign_toplevel;
 	bool is_fullscreen;
 	bool mapped;
+	int original_x;
+	int original_y;
+	int original_width;
+	int original_height;
 	int keyboard_layout;
 	int x;
 	int y;
@@ -436,7 +441,7 @@ static void focus_view(struct woodland_view *view, struct wlr_surface *surface) 
 		wlr_log(WLR_ERROR, "focus_view called with NULL view or surface. view: %p, surface: %p",
 																			view, surface);
 		return;
-	}
+	}	
 
 	wlr_log(WLR_INFO, "Focusing view: %p, surface: %p", view, surface);
 
@@ -463,7 +468,8 @@ static void focus_view(struct woodland_view *view, struct wlr_surface *surface) 
 		if (previous) {
 			wlr_log(WLR_INFO, "Deactivating previous surface: %p", previous);
 			wlr_xdg_toplevel_set_activated(previous, false);
-			wlr_seat_keyboard_notify_clear_focus(seat);
+			// If not commenting out the line below, Firefox won't show Settings dialog
+			///wlr_seat_keyboard_notify_clear_focus(seat);
 		}
 		else {
 			wlr_log(WLR_ERROR, "Previous surface is not a valid xdg_surface.");
@@ -558,7 +564,8 @@ static void focus_view(struct woodland_view *view, struct wlr_surface *surface) 
 		if (layout_name) {
 			//printf("Layout at index %d: %s\n", view->keyboard_layout, layout_name);
 			free(layout_name);
-		} else {
+		}
+		else {
 			printf("No layout found at index %d\n", view->keyboard_layout);
 		}
 
@@ -773,6 +780,7 @@ static bool handle_keybinding_alt(struct woodland_server *server, xkb_keysym_t s
 			break;
 		}
 		if (next_view) {
+			server->keybind_handled = true;
 			focus_view(next_view, next_view->xdg_surface->surface);
 			/* Move the previous view to the end of the list */
 			wl_list_remove(&current_view->link);
@@ -838,6 +846,7 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 	// Get the woodland_keyboard and woodland_server from the listener
 	struct woodland_keyboard *keyboard = wl_container_of(listener, keyboard, key);
 	struct woodland_server *server = keyboard->server;
+	struct wlr_session *session = wlr_backend_get_session(server->backend);
 	struct wlr_event_keyboard_key *event = data;
 	struct wlr_seat *seat = server->seat;
 	
@@ -861,6 +870,32 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 	///							event->keycode, event->state, modifiers, keyname);
 
 	for (int i = 0; i < nsyms; i++) {
+		// Change VT
+		if (syms[i] == XKB_KEY_XF86Switch_VT_1) {
+			wlr_session_change_vt(session, 1);
+			return;
+		}
+		else if (syms[i] == XKB_KEY_XF86Switch_VT_2) {
+			wlr_session_change_vt(session, 2);
+			return;
+		}
+		else if (syms[i] == XKB_KEY_XF86Switch_VT_3 || syms[i] == XKB_KEY_XF86Switch_VT_4 || \
+			syms[i] == XKB_KEY_XF86Switch_VT_5 || syms[i] == XKB_KEY_XF86Switch_VT_6 || \
+			syms[i] == XKB_KEY_XF86Switch_VT_7 || syms[i] == XKB_KEY_XF86Switch_VT_8 || \
+			syms[i] == XKB_KEY_XF86Switch_VT_9 || syms[i] == XKB_KEY_XF86Switch_VT_10 || \
+			syms[i] == XKB_KEY_XF86Switch_VT_11 || syms[i] == XKB_KEY_XF86Switch_VT_12 || \
+			syms[i] == XKB_KEY_XF86MonBrightnessUp || syms[i] == XKB_KEY_XF86MonBrightnessDown || \
+			syms[i] == XKB_KEY_XF86KbdBrightnessUp || syms[i] == XKB_KEY_XF86KbdBrightnessDown || \
+			syms[i] == XKB_KEY_XF86AudioLowerVolume || syms[i] == XKB_KEY_XF86AudioRaiseVolume || \
+			syms[i] == XKB_KEY_XF86AudioMute || syms[i] == XKB_KEY_XF86AudioPlay || \
+			syms[i] == XKB_KEY_XF86AudioStop || syms[i] == XKB_KEY_XF86AudioPrev || \
+			syms[i] == XKB_KEY_XF86AudioNext || syms[i] == XKB_KEY_XF86AudioPause || \
+			syms[i] == XKB_KEY_XF86BrightnessAdjust || syms[i] == XKB_KEY_XF86AudioRewind || \
+			syms[i] == XKB_KEY_XF86BackForward || syms[i] == XKB_KEY_XF86Audio || \
+			syms[i] == XKB_KEY_XF86Fn) {
+			return;
+		}
+		// CHange keyboard layout
 		///fprintf(stderr, "keyname: %s\n", keyname);
 		if (strcmp(keyname, "XKB_KEY_ISO_Next_Group") == 0 && event->state == \
 										WL_KEYBOARD_KEY_STATE_RELEASED) {
@@ -1599,7 +1634,7 @@ static void server_cursor_axis(struct wl_listener *listener, void *data) {
 																		output->transform_matrix);
 					}
 					else if (server->zoom_factor > 1.0) {
-						server->zoom_factor = server->zoom_factor - 0.1;
+						server->zoom_factor = server->zoom_factor - 0.3;
 						update_pan_offset(server,
 										  server->cursor->x,
 										  server->cursor->y,
@@ -1630,7 +1665,7 @@ static void server_cursor_axis(struct wl_listener *listener, void *data) {
 				}
 				if ((server->super_key_down) || (zoom_on_top_edge)) {
 					// Zooming in
-					server->zoom_factor = server->zoom_factor + 0.1;
+					server->zoom_factor = server->zoom_factor + 0.3;
 					update_pan_offset(server,
 									  server->cursor->x,
 									  server->cursor->y,
@@ -1751,11 +1786,15 @@ static void render_surface(struct wlr_surface *surface, int sx, int sy, void *da
 						   0.0,
 						   output->transform_matrix);
 	/* This takes our matrix, the texture, and an alpha, and performs the actual
-	 * rendering on the GPU. */
-	///struct wlr_fbox fbox;
-	///wlr_surface_get_buffer_source_box(surface, &fbox);
-	///wlr_render_subtexture_with_matrix(rdata->renderer, texture, &fbox, view->server->matrix, 1);
-	wlr_render_texture_with_matrix(rdata->renderer, texture, view->server->matrix, 1);
+	 * rendering on the GPU.
+	 * If use 'wlr_render_texture_with_matrix' then chromium based browsers like brave
+	 * have glitches they can't properly use viewporter and can't scale properly,
+	 * that's why it's better to use 'wlr_render_subtexture_with_matrix'.
+	 */
+	struct wlr_fbox fbox;
+	wlr_surface_get_buffer_source_box(surface, &fbox);
+	wlr_render_subtexture_with_matrix(rdata->renderer, texture, &fbox, view->server->matrix, 1);
+	///wlr_render_texture_with_matrix(rdata->renderer, texture, view->server->matrix, 1);
 
 	/* This lets the client know that we've displayed that frame and it can
 	 * prepare another one now if it likes. */
@@ -2687,7 +2726,8 @@ static void begin_interactive(struct woodland_view *view,
 											server->zoom_factor) - view->x;
 		server->grab_y = ((server->cursor->y + server->pan_offset_y) / \
 											server->zoom_factor) - view->y;
-	} else if (mode == WOODLAND_CURSOR_RESIZE) {
+	}
+	else if (mode == WOODLAND_CURSOR_RESIZE) {
 		struct wlr_box geo_box;
 		wlr_xdg_surface_get_geometry(view->xdg_surface, &geo_box);
 		double border_x = (view->x + geo_box.x) + ((edges & WLR_EDGE_RIGHT) ? geo_box.width : 0);
@@ -2708,6 +2748,12 @@ static void xdg_toplevel_request_fullscreen(struct wl_listener *listener, void *
 	struct wlr_xdg_toplevel_set_fullscreen_event *event = data;
 
 	if (event->fullscreen) {
+		// Store the original size and position
+		view->original_x = view->x;
+		view->original_y = view->y;
+		view->original_width = view->xdg_surface->surface->current.width;
+		view->original_height = view->xdg_surface->surface->current.height;
+
 		// Set the view to fullscreen
 		wlr_log(WLR_INFO, "Setting view to fullscreen");
 		view->is_fullscreen = true;
@@ -2721,9 +2767,11 @@ static void xdg_toplevel_request_fullscreen(struct wl_listener *listener, void *
 			return;
 		}
 
-		// Configure the surface to cover the whole output
-		///struct wlr_box *output_box = wlr_output_layout_get_box(view->server->output_layout,
-		///																				output);
+		// Set the view position to (0, 0)
+		view->x = 0;
+		view->y = 0;
+
+		// Get the output's resolution and set the surface size
 		int width;
 		int height;
 		wlr_output_transformed_resolution(output, &width, &height);
@@ -2734,9 +2782,20 @@ static void xdg_toplevel_request_fullscreen(struct wl_listener *listener, void *
 		wlr_output_commit(output);
 	}
 	else {
-		// Unset fullscreen
+		// Restore the original size and position
 		wlr_log(WLR_INFO, "Unsetting view from fullscreen");
 		view->is_fullscreen = false;
+
+		// Restore the original size and position
+		view->x = view->original_x;
+		view->y = view->original_y;
+		/* As much as i tried to avoid using magic numbers
+		 * i couldn't figure out why the window width was larger
+		 * on exiting the fullscreen mode, hence 'original_width - 30'
+		 */
+		wlr_xdg_toplevel_set_size(view->xdg_surface,
+								  (view->original_width - 30),
+								  view->original_height);
 		wlr_xdg_toplevel_set_fullscreen(view->xdg_surface, false);
 	}
 
@@ -2833,9 +2892,10 @@ static void server_new_xdg_surface(struct wl_listener *listener, void *data) {
 	}
 
 	if (xdg_surface->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL) {
-		wlr_log(WLR_ERROR, "Current surface is not XDG toplevel, skipping.");
+		wlr_log(WLR_ERROR, "Current surface is not XDG toplevel.");
 		// Fix popups opening beyond output size
 		if (xdg_surface->role == WLR_XDG_SURFACE_ROLE_POPUP) {
+			wlr_log(WLR_INFO, "Creating new XDG Popup.");
 			struct wlr_box box;
 			box.x = 0;
 			box.y = 0;
