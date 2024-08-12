@@ -51,7 +51,7 @@ and also to all open-source enthusiasts in general.
    4. Multiple keyboard layouts.
    5. Per application keyboard layout.
    6. Keyboard shortcuts.
-   7. Multimedia keys support
+   7. Multimedia keys support.
    8. User-defined window placement.
    9. Autostart applications.
 
@@ -108,7 +108,7 @@ If you want to autostart woodland without any login manager then these are the s
 
   3. Make it executable:
 
-		 sudo chmod +x /etc/profile.d/wayfire.sh
+		 sudo chmod +x /etc/profile.d/woodland.sh
 
   4. Modify 'getty@tty1.service' for autologin. (Disclaimer: Be cautious!!! This might be a security risk so do at your own risk.)
 
