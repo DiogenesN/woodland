@@ -51,8 +51,9 @@ and also to all open-source enthusiasts in general.
    4. Multiple keyboard layouts.
    5. Per application keyboard layout.
    6. Keyboard shortcuts.
-   7. User-defined window placement.
-   8. Autostart applications.
+   7. Multimedia keys support
+   8. User-defined window placement.
+   9. Autostart applications.
 
 # TODO:
 
