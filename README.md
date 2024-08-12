@@ -56,7 +56,7 @@ and also to all open-source enthusiasts in general.
 
 # TODO:
 
-	Many things like: multimedia keys support, maximizing, window decorations etc.
+  Damage tracking.
 
 # Installation
 
@@ -88,10 +88,6 @@ and also to all open-source enthusiasts in general.
 
   If wlroots complains about missing header files then copy the header files from 'include' directory to '/usr/include/wlr/types/'
   If wlroots complains about missing 'pixman' header files then add #include <pixman-1/pixman.h> to:
-
-    /usr/include/wlr/types/buffer.h
-    /usr/include/wlr/types/wlr_scene.h
-    /usr/include/wlr/types/wlr_surface.h
 		
 # Usage
 
@@ -149,7 +145,9 @@ Woodland creates the following configuration file:
 	The timeout in milliseconds until the system is considered idle.
 	One minute is 60000 milliseconds.
 	idle_timeout = 0 disables the timeout.
+ 	brightness_path, the path to the file that controls the brightness level.
 	idle_timeout = 180000
+ 	brightness_path = /sys/class/backlight/intel_backlight/brightness
 
   2. Background image
 
@@ -164,7 +162,17 @@ Woodland creates the following configuration file:
 	e.g: xkb_layouts=us,de
 	xkb_layouts=us,de
 
-  4. Keyboard shortcuts
+  4. Multimedian keys
+
+	[ Multimedia keys ]
+	For default multimedia keys support install: playerctl, alsa-utils
+	or use your own commands.
+	play_pause  = playerctl play-pause
+	volume_up   = amixer set Master 3+
+	volume_down = amixer set Master 3-
+	volume_mute = amixer set Master toggle
+
+  5. Keyboard shortcuts
 
 	[ Keyboard Shortcuts ]
 	Modifiers names:
@@ -184,7 +192,7 @@ Woodland creates the following configuration file:
 	binding_thunar = WLR_MODIFIER_LOGO XKB_KEY_f
 	command_thunar = thunar
 
-  5. Window placement
+  6. Window placement
 
 	[ Window Placement ]
 	Open specified windows at the given fixed position.
@@ -201,7 +209,7 @@ Woodland creates the following configuration file:
 	Placing thunar
 	window_place = app_id: thunar -15 -15
 
-  6. Zoom
+  7. Zoom
 
 	[ Zoom ]
 	Zooming is activated by pressing super key and scrolling.
@@ -212,7 +220,7 @@ Woodland creates the following configuration file:
 	zoom_top_edge = enabled
 	zoom_edge_threshold = 30
 
-  7. Autostart applications
+  8. Autostart applications
 
   	[ Startup ]
 	Specify the startup commands.
