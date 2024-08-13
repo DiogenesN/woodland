@@ -146,9 +146,9 @@ Woodland creates the following configuration file:
 	The timeout in milliseconds until the system is considered idle.
 	One minute is 60000 milliseconds.
 	idle_timeout = 0 disables the timeout.
- 	brightness_path, the path to the file that controls the brightness level.
+ 	d_power_path, the path to the file that controls the brightness level.
 	idle_timeout = 180000
- 	brightness_path = /sys/class/backlight/intel_backlight/brightness
+ 	d_power_path = /sys/class/backlight/intel_backlight/brightness
 
   2. Background image
 
