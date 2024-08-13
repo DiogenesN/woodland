@@ -57,7 +57,7 @@ and also to all open-source enthusiasts in general.
 
 # TODO:
 
-  Damage tracking.
+  Idle inhibitor, damage tracking, maximizing, decorations.
 
 # Installation
 
