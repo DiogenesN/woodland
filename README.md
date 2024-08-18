@@ -47,7 +47,7 @@ and also to all open-source enthusiasts in general.
 
    1. Screen zooming.
    2. Idle timeout.
-   3. Set background image (without relying on third-party unitilies).
+   3. Set background image (without relying on third-party utilities).
    4. Multiple keyboard layouts.
    5. Per application keyboard layout.
    6. Keyboard shortcuts.
