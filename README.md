@@ -88,8 +88,7 @@ and also to all open-source enthusiasts in general.
 ## Tips
 
   If wlroots complains about missing header files then copy the header files from 'include' directory to '/usr/include/wlr/types/'
-  If wlroots complains about missing 'pixman' header files then add #include <pixman-1/pixman.h> to:
-		
+
 # Usage
 
 You have many options how to launch woodland (or pretty much any application).
