@@ -2307,12 +2307,10 @@ static void _xdg_surface_destroy(struct wl_listener *listener, void *data) {
 			focus_surface = true;
 		}
 	}
-
 	// Clean up the foreign toplevel handle if it exists
-	if (view->foreign_toplevel) {
+	if (view->xdg_surface->toplevel->requested.minimized && view->foreign_toplevel) {
 		wlr_foreign_toplevel_handle_v1_destroy(view->foreign_toplevel);
 	}
-
 	// Remove the view from all lists it is part of
 	if (!wl_list_empty(&view->map.link)) {
 		wl_list_remove(&view->map.link);
@@ -2788,7 +2786,7 @@ static void xdg_surface_map(struct wl_listener *listener, void *data) {
 	// if it's been minimized then we must not create a new one
 	// instead we just activate it, otherwise there will be
 	// many duplicates of the same items in window lust and crashes
-	if (!view->xdg_surface->toplevel->requested.minimized) {
+	if (!view->xdg_surface->toplevel->requested.minimized && title != NULL && app_id != NULL) {
 		view->foreign_toplevel = wlr_foreign_toplevel_handle_v1_create(foreign_topmgr);
 
 		// Set title and app_id
@@ -2836,6 +2834,10 @@ static void xdg_surface_unmap(struct wl_listener *listener, void *data) {
 		return;
 	}
 	view->mapped = false;
+	// Clean up the foreign toplevel handle if it exists
+	if (!view->xdg_surface->toplevel->requested.minimized && view->foreign_toplevel) {
+		wlr_foreign_toplevel_handle_v1_destroy(view->foreign_toplevel);
+	}
 	wlr_log(WLR_INFO, "XDG surface unmapped!");
 }
 
