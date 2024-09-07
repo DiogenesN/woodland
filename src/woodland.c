@@ -191,11 +191,10 @@ struct woodland_view {
 	struct wl_listener request_move;
 	struct wl_listener request_resize;
 	struct wl_listener foreign_destroy;
+	struct wl_listener foreign_minimize;
 	struct wl_listener request_minimize;
 	struct wl_listener request_fullscreen;
-	struct wl_listener foreign_close_request;
 	struct wl_listener foreign_activate_request;
-	struct wl_listener foreign_fullscreen_request;
 	struct wlr_foreign_toplevel_handle_v1 *foreign_toplevel;
 	xkb_layout_index_t keyboard_layout;
 	bool is_fullscreen;
@@ -579,15 +578,19 @@ static void focus_view(struct woodland_view *view, struct wlr_surface *surface) 
 		wlr_log(WLR_ERROR, "focus_view called with NULL view or surface. view: %p, surface: %p",
 																			view, surface);
 		return;
-	}	
-
-	wlr_log(WLR_INFO, "Focusing view: %p, surface: %p", view, surface);
+	}
 
 	/* Get the seat and server associated with the view */
 	struct woodland_server *server = view->server;
 	struct wlr_seat *seat = server->seat;
 	/* Get the previously focused surface */
 	struct wlr_surface *prev_surface = seat->keyboard_state.focused_surface;
+	/* Notify the surface that it has entered the output */
+	struct wlr_output *output = wlr_output_layout_output_at(server->output_layout,
+															server->cursor->x,
+															server->cursor->y);
+
+	wlr_log(WLR_INFO, "Focusing view: %p, surface: %p", view, surface);
 
 	/* Check if a keyboard is available for the seat */
 	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(seat);
@@ -630,6 +633,9 @@ static void focus_view(struct woodland_view *view, struct wlr_surface *surface) 
 		if (previous) {
 			wlr_log(WLR_INFO, "Deactivating previous surface: %p", previous);
 			wlr_xdg_toplevel_set_activated(previous, false);
+			if (view->foreign_toplevel) {
+				wlr_foreign_toplevel_handle_v1_set_activated(view->foreign_toplevel, false);
+			}
 			// If not commenting out the line below, Firefox won't show Settings dialog
 			///wlr_seat_keyboard_notify_clear_focus(seat);
 		}
@@ -671,13 +677,11 @@ static void focus_view(struct woodland_view *view, struct wlr_surface *surface) 
 								   keyboard->keycodes,
 								   keyboard->num_keycodes,
 								   &keyboard->modifiers);
-
-	/* Notify the surface that it has entered the output */
-	struct wlr_output *output = wlr_output_layout_output_at(server->output_layout,
-															server->cursor->x,
-															server->cursor->y);
 	if (output) {
 		wlr_surface_send_enter(view->xdg_surface->surface, output);
+		if (view->foreign_toplevel) {
+			wlr_foreign_toplevel_handle_v1_set_activated(view->foreign_toplevel, true);
+		}
 	}
 
 	wlr_log(WLR_INFO, "View focused: %p", view);
@@ -2383,52 +2387,53 @@ static void handle_foreign_toplevel_destroy(struct wl_listener *listener, void *
 		wlr_log(WLR_ERROR, "Error: Empty 'view' in 'handle_foreign_toplevel_destroy'!");
 		return;
 	}
-	if (!wl_list_empty(&view->foreign_destroy.link)) {
-		wl_list_remove(&view->foreign_destroy.link);
-	}
-	if (!wl_list_empty(&view->foreign_close_request.link)) {
-		wl_list_remove(&view->foreign_close_request.link);
+	if (!wl_list_empty(&view->foreign_minimize.link)) {
+		wl_list_remove(&view->foreign_minimize.link);
 	}
 	if (!wl_list_empty(&view->foreign_activate_request.link)) {
 		wl_list_remove(&view->foreign_activate_request.link);
 	}
-	if (!wl_list_empty(&view->foreign_fullscreen_request.link)) {
-		wl_list_remove(&view->foreign_fullscreen_request.link);
+	if (!wl_list_empty(&view->foreign_destroy.link)) {
+		wl_list_remove(&view->foreign_destroy.link);
 	}
 	wlr_log(WLR_INFO, "Foreign handle destroyed!");
 }
 
-static void handle_foreign_close_request(struct wl_listener *listener, void *data) {
+static void handle_foreign_toplevel_minimize(struct wl_listener *listener, void *data) {
 	(void)data;
-	wlr_log(WLR_INFO, "Foreign handle closing...");
-	struct woodland_view *view = wl_container_of(listener, view, foreign_close_request);
-	if (view && view->foreign_toplevel) {
-		wlr_xdg_toplevel_send_close(view->xdg_surface);
-	}
-	else {
-		wlr_log(WLR_ERROR, "Return from 'handle_foreign_close_request'!");
+	wlr_log(WLR_INFO, "Foreign handle minimizing...");
+	struct woodland_view *view = wl_container_of(listener, view, foreign_minimize);
+	if ((!view) || (view == NULL)) {
+		wlr_log(WLR_ERROR, "Error: Empty 'view' in 'handle_foreign_toplevel_destroy'!");
 		return;
 	}
-	wlr_log(WLR_INFO, "Foreign handle closed!");
+	if (view->foreign_toplevel) {
+		wlr_foreign_toplevel_handle_v1_set_minimized(view->foreign_toplevel, true);
+		// Remove the view from the list of active views
+		if (!wl_list_empty(&view->link)) {
+			wl_list_remove(&view->link);
+			// Add it to the list of minimized views
+			wl_list_insert(&view->server->minimized_views, &view->link);
+		}
+		view->mapped = false;
+	}
+	wlr_log(WLR_INFO, "Foreign handle minimized!");
 }
 
 static void handle_foreign_activate_request(struct wl_listener *listener, void *data) {
 	(void)data;
 	wlr_log(WLR_INFO, "Foreign handle activating...");
 	struct woodland_view *view = wl_container_of(listener, view, foreign_activate_request);
-	struct woodland_server *server = view->server;
 	if (view && view->foreign_toplevel) {
-		// Remove the view from the list of minimized views
-		if (!wl_list_empty(&view->link)) {
-			wl_list_remove(&view->link);
-			// Add it back to the list of active views
-			wl_list_insert(&server->views, &view->link);
-		}
 		// Map the surface to show it
 		if (!view->mapped) {
-			wl_signal_emit(&view->xdg_surface->events.map, view->xdg_surface);
+			view->mapped = true;
 		}
 		if (view->xdg_surface->surface) {
+			if (view->foreign_toplevel) {
+				wlr_foreign_toplevel_handle_v1_set_activated(view->foreign_toplevel, true);
+				wlr_foreign_toplevel_handle_v1_set_minimized(view->foreign_toplevel, false);
+			}
 			focus_view(view, view->xdg_surface->surface);
 		}
 	}
@@ -2437,25 +2442,6 @@ static void handle_foreign_activate_request(struct wl_listener *listener, void *
 		return;
 	}
 	wlr_log(WLR_INFO, "Foreign handle activated!");
-}
-
-static void handle_foreign_fullscreen_request(struct wl_listener *listener, void *data) {
-	(void)data;
-	wlr_log(WLR_INFO, "Foreign handle fullscreen requesting...");
-	struct wlr_foreign_toplevel_handle_v1_fullscreen_event *event = data;
-	if ((!event) || (event == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'event' is NULL in 'handle_foreign_fullscreen_request'.");
-		return;
-	}
-	struct woodland_view *view = wl_container_of(listener, view, foreign_fullscreen_request);
-	if (view && view->foreign_toplevel) {
-		wlr_xdg_toplevel_set_fullscreen(view->xdg_surface, event->fullscreen);
-	}
-	else {
-		wlr_log(WLR_ERROR, "Return from 'handle_foreign_fullscreen_request'!");
-		return;
-	}
-	wlr_log(WLR_INFO, "Foreign handle fullscreen set!");
 }
 
 /* Get user defined window placement coordinates from wooldand.ini config */
@@ -2793,26 +2779,20 @@ static void xdg_surface_map(struct wl_listener *listener, void *data) {
 		wlr_foreign_toplevel_handle_v1_set_title(view->foreign_toplevel, title);
 		wlr_foreign_toplevel_handle_v1_set_app_id(view->foreign_toplevel, app_id);
 
-		wl_list_init(&view->foreign_destroy.link);
-		wl_list_init(&view->foreign_close_request.link);
+		wl_list_init(&view->foreign_minimize.link);
 		wl_list_init(&view->foreign_activate_request.link);
-		wl_list_init(&view->foreign_fullscreen_request.link);
+		wl_list_init(&view->foreign_destroy.link);
 
 		// Add listeners for foreign toplevel events
-		view->foreign_destroy.notify = handle_foreign_toplevel_destroy;
-		wl_signal_add(&view->foreign_toplevel->events.destroy, &view->foreign_destroy);
-
-		view->foreign_close_request.notify = handle_foreign_close_request;
-		wl_signal_add(&view->foreign_toplevel->events.request_close,
-										&view->foreign_close_request);
+		view->foreign_minimize.notify = handle_foreign_toplevel_minimize;
+		wl_signal_add(&view->foreign_toplevel->events.request_minimize, &view->foreign_minimize);
 
 		view->foreign_activate_request.notify = handle_foreign_activate_request;
 		wl_signal_add(&view->foreign_toplevel->events.request_activate,
 										&view->foreign_activate_request);
 
-		view->foreign_fullscreen_request.notify = handle_foreign_fullscreen_request;
-		wl_signal_add(&view->foreign_toplevel->events.request_fullscreen,
-										&view->foreign_fullscreen_request);
+		view->foreign_destroy.notify = handle_foreign_toplevel_destroy;
+		wl_signal_add(&view->foreign_toplevel->events.destroy, &view->foreign_destroy);
 	}
 	// Set mapped flag, this flag is read by rendering function
 	// and it renders only a view with mapped flag true
@@ -2835,7 +2815,8 @@ static void xdg_surface_unmap(struct wl_listener *listener, void *data) {
 	}
 	view->mapped = false;
 	// Clean up the foreign toplevel handle if it exists
-	if (!view->xdg_surface->toplevel->requested.minimized && view->foreign_toplevel) {
+	if (view->foreign_toplevel->state != WLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED && \
+		(!view->xdg_surface->toplevel->requested.minimized && view->foreign_toplevel)) {
 		wlr_foreign_toplevel_handle_v1_destroy(view->foreign_toplevel);
 	}
 	wlr_log(WLR_INFO, "XDG surface unmapped!");
@@ -2892,8 +2873,8 @@ static void begin_interactive(struct woodland_view *view,
 }
 
 static void xdg_toplevel_request_fullscreen(struct wl_listener *listener, void *data) {
-	struct woodland_view *view = wl_container_of(listener, view, request_fullscreen);
 	struct wlr_xdg_toplevel_set_fullscreen_event *event = data;
+	struct woodland_view *view = wl_container_of(listener, view, request_fullscreen);
 
 	if (event->fullscreen) {
 		// Store the original size and position
@@ -2927,6 +2908,9 @@ static void xdg_toplevel_request_fullscreen(struct wl_listener *listener, void *
 
 		// Set the output mode to fullscreen
 		wlr_xdg_toplevel_set_fullscreen(view->xdg_surface, true);
+		if (view->foreign_toplevel) {
+			wlr_foreign_toplevel_handle_v1_set_fullscreen(view->foreign_toplevel, true);
+		}
 		wlr_output_commit(output);
 	}
 	else {
@@ -2945,6 +2929,9 @@ static void xdg_toplevel_request_fullscreen(struct wl_listener *listener, void *
 								  (view->original_width - 33),
 								  view->original_height - 40);
 		wlr_xdg_toplevel_set_fullscreen(view->xdg_surface, false);
+		if (view->foreign_toplevel) {
+			wlr_foreign_toplevel_handle_v1_set_fullscreen(view->foreign_toplevel, false);
+		}
 	}
 
 	// Send a configure event to the client to apply the changes
@@ -3013,6 +3000,9 @@ static void xdg_toplevel_request_minimize(struct wl_listener *listener, void *da
 		wlr_surface_send_leave(view->xdg_surface->surface, output);
 		wl_signal_emit(&view->xdg_surface->events.unmap, &view->unmap);
 		wlr_xdg_surface_schedule_configure(view->xdg_surface);
+		if (view->foreign_toplevel) {
+			wlr_foreign_toplevel_handle_v1_set_minimized(view->foreign_toplevel, true);
+		}
 	}
 	// Optionally, you might want to call a render function to update the display
 }
