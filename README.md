@@ -191,9 +191,9 @@ Woodland creates the following configuration file:
 	(declaration) window_place = (keyword) app_id: (app id) app_id (number) x (number) y
 	(declaration) window_place = (keyword) title: (title) title (number) x (number) y
 	Example of how to make 'thunar' start at position x=100 y=100:
-	#window_place = app_id: thunar 100 100 (places thunar at x=100 y=100)
+	window_place = app_id: thunar 100 100
 	or
-	#window_place = title: "some title" 100 100 (places window containing title at x=100 y=100)
+	window_place = title: "some title" 100 100
 	NOTE: Titles with spaces must be put between double quotes: e.g "New Document"
 
 	Placing thunar
