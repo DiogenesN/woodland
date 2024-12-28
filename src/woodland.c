@@ -3465,6 +3465,9 @@ int main(int argc, char *argv[]) {
 	server.zoom_top_edge = get_char_value_from_conf(server.config, "zoom_top_edge");
 	server.zoom_edge_threshold = get_double_value_from_conf(server.config, "zoom_edge_threshold");
 
+	/* Getting welcome screen command */
+	char *welcome_screen_CMD = get_char_value_from_conf(server.config, "welcome_screen");
+
 	/* Idle variable */
 	server.idle_enabled = false;
 
@@ -3817,6 +3820,9 @@ int main(int argc, char *argv[]) {
 		}
 	}
 	else {
+		/* Run welcome screen */
+		fprintf(stderr, "welcome_screen_CMD: %s\n", welcome_screen_CMD);
+		run_cmd(welcome_screen_CMD);
 		/*** Startup commands after delay */
 		server.autostart_timer = wl_event_loop_add_timer(event_loop,
 														 process_startup_commands,
@@ -3835,6 +3841,10 @@ int main(int argc, char *argv[]) {
 
 	// Clean up signals (assuming signal cleanup functions are available)
 	// Free allocated memory
+	if (welcome_screen_CMD) {
+		free(welcome_screen_CMD);
+		welcome_screen_CMD = NULL;
+	}
 	if (server.zoom_top_edge) {
 		free(server.zoom_top_edge);
 		server.zoom_top_edge = NULL;

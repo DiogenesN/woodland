@@ -49,6 +49,9 @@ void create_config(void) {
 		}
 
 		fprintf(config, "%s\n", "# Configuration file for woodland compositor\n");
+		fprintf(config, "%s\n", "[ Welcome screen ]");
+		fprintf(config, "%s\n", "# If you have any weclome screen application then it goes here.");
+		fprintf(config, "%s\n", "welcome_screen = none\n");
 		fprintf(config, "%s\n", "[ Idle ]");
 		fprintf(config, "%s\n", "# The timeout in milliseconds until the system is considered idle.");
 		fprintf(config, "%s\n", "# One minute is 60000 milliseconds.");
