@@ -133,10 +133,10 @@ Woodland creates the following configuration file:
 
   1. Welcome screen
 
-         [ Welcome screen ]
-         If you have any weclome screen application then it goes here,
-         for instance you can use my welcome screen application like this:
-         welcome_screen = welcomescreen --resolution 1920x1080
+     [ Welcome screen ]
+     If you have any weclome screen application then it goes here,
+     for instance you can use my welcome screen application like this:
+     welcome_screen = welcomescreen --resolution 1920x1080
 
   3. Idle
  
