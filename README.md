@@ -12,7 +12,9 @@ Menu:
 Window list:
 [diowwindowlist](https://github.com/DiogenesN/diowwindowlist)\
 Application launcher:
-[diowapplauncher](https://github.com/DiogenesN/diowapplauncher)
+[diowapplauncher](https://github.com/DiogenesN/diowapplauncher)\
+Welcome Screen:
+[welcomescreen](https://github.com/DiogenesN/welcomescreen).
 
 Woodland has no reliance on any particular Desktop Environment, Desktop Shell or session.
 Also it does not depend on any UI toolkits such as Qt or GTK.
@@ -129,7 +131,14 @@ Woodland creates the following configuration file:
 
   it is very straightforward and self-explanatory but we will go through each section
 
-  1. Idle
+  1. Welcome screen
+
+         [ Welcome screen ]
+         If you have any weclome screen application then it goes here,
+         for instance you can use my welcome screen application like this:
+         welcome_screen = welcomescreen --resolution 1920x1080
+
+  3. Idle
  
 	[ Idle ]
 	The timeout in milliseconds until the system is considered idle.
@@ -139,13 +148,13 @@ Woodland creates the following configuration file:
 	idle_timeout = 180000
  	d_power_path = /sys/class/backlight/intel_backlight/brightness
 
-  2. Background image
+  3. Background image
 
 	[ Background ]
 	Provide the full path to the image.
 	background = /home/username/image.png
 
-  3. Keyboard layouts
+  4. Keyboard layouts
 
 	[ Keyboard layouts ]
 	Alt+Shift to switch layouts
