@@ -573,31 +573,31 @@ static void change_keyboard_layout(struct woodland_server *server,
 }
 
 static void focus_view(struct woodland_view *view, struct wlr_surface *surface) {
-	/* Note: this function only deals with keyboard focus. */
+	// Note: this function only deals with keyboard focus.
 	if (view == NULL || surface == NULL) {
 		wlr_log(WLR_ERROR, "focus_view called with NULL view or surface. view: %p, surface: %p",
 																			view, surface);
 		return;
 	}
 
-	/* Get the seat and server associated with the view */
+	// Get the seat and server associated with the view
 	struct woodland_server *server = view->server;
 	struct wlr_seat *seat = server->seat;
-	/* Get the previously focused surface */
+	// Get the previously focused surface
 	struct wlr_surface *prev_surface = seat->keyboard_state.focused_surface;
-	/* Notify the surface that it has entered the output */
+	// Notify the surface that it has entered the output
 	struct wlr_output *output = wlr_output_layout_output_at(server->output_layout,
 															server->cursor->x,
 															server->cursor->y);
 
 	wlr_log(WLR_INFO, "Focusing view: %p, surface: %p", view, surface);
 
-	/* Check if a keyboard is available for the seat */
+	// Check if a keyboard is available for the seat
 	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(seat);
 	if (!keyboard) {
 		wlr_log(WLR_ERROR, "No keyboard found for seat. Trying to reassign a keyboard.");
 		
-		/* Forcefully reassign the first available keyboard */
+		// Forcefully reassign the first available keyboard
 		struct woodland_keyboard *new_keyboard = NULL;
 		struct woodland_keyboard *key;
 		wl_list_for_each(key, &server->keyboards, link) {
@@ -617,34 +617,33 @@ static void focus_view(struct woodland_view *view, struct wlr_surface *surface) 
 	}
 
 	if (prev_surface == surface) {
-		/* Don't re-focus an already focused surface. */
+		// Don't re-focus an already focused surface.
 		wlr_log(WLR_INFO, "Surface already focused: %p", surface);
 		return;
 	}
 
 	if (prev_surface) {
-		/*
-		 * Deactivate the previously focused surface. This lets the client know
-		 * it no longer has focus and the client will repaint accordingly, e.g.
-		 * stop displaying a caret.
-		 */
-		struct wlr_xdg_surface *previous = wlr_xdg_surface_from_wlr_surface(
-										seat->keyboard_state.focused_surface);
+		struct wlr_xdg_surface *previous = wlr_xdg_surface_from_wlr_surface(prev_surface);
 		if (previous) {
-			wlr_log(WLR_INFO, "Deactivating previous surface: %p", previous);
-			wlr_xdg_toplevel_set_activated(previous, false);
-			if (view->foreign_toplevel) {
-				wlr_foreign_toplevel_handle_v1_set_activated(view->foreign_toplevel, false);
+			// Deactivate the previously focused surface. This lets the client know
+			// it no longer has focus and the client will repaint accordingly, e.g.
+			// stop displaying a caret.
+
+			// Check if the surface is still mapped (i.e., not destroyed)
+			if (previous->surface && previous->surface->resource) {
+				wlr_log(WLR_INFO, "Deactivating previous surface: %p", previous);
+				wlr_xdg_toplevel_set_activated(previous, false);
 			}
-			// If not commenting out the line below, Firefox won't show Settings dialog
-			///wlr_seat_keyboard_notify_clear_focus(seat);
+			else {
+				wlr_log(WLR_ERROR, "Previous surface is invalid or destroyed.");
+			}
 		}
 		else {
 			wlr_log(WLR_ERROR, "Previous surface is not a valid xdg_surface.");
 		}
 	}
 
-	/* Move the view to the front */
+	// Move the view to the front
 	if (view) {
 		if (!wl_list_empty(&view->link)) {
 			wl_list_remove(&view->link);
@@ -658,7 +657,7 @@ static void focus_view(struct woodland_view *view, struct wlr_surface *surface) 
 		return;
 	}
 
-	/* Activate the new surface */
+	// Activate the new surface
 	if (view->xdg_surface) {
 		wlr_xdg_toplevel_set_activated(view->xdg_surface, true);
 	}
@@ -667,23 +666,20 @@ static void focus_view(struct woodland_view *view, struct wlr_surface *surface) 
 		return;
 	}
 
-	/*
-	 * Tell the seat to have the keyboard enter this surface. wlroots will keep
-	 * track of this and automatically send key events to the appropriate
-	 * clients without additional work on your part.
-	 */
+	// Tell the seat to have the keyboard enter this surface. wlroots will keep
+	// track of this and automatically send key events to the appropriate
+	// clients without additional work on your part.
+
 	wlr_seat_keyboard_notify_enter(seat,
 								   view->xdg_surface->surface,
 								   keyboard->keycodes,
 								   keyboard->num_keycodes,
 								   &keyboard->modifiers);
+
 	if (output) {
 		wlr_surface_send_enter(view->xdg_surface->surface, output);
-		if (view->foreign_toplevel) {
-			wlr_foreign_toplevel_handle_v1_set_activated(view->foreign_toplevel, true);
-		}
 	}
-
+	
 	wlr_log(WLR_INFO, "View focused: %p", view);
 }
 
