@@ -156,8 +156,8 @@ Woodland creates the following configuration files:
 
   2. Brightness
  
-     [ Brightness ]
-     In order for backlight to worl you have to do the following:\
+    [ Brightness ]
+    In order for backlight to worl you have to do the following:\
 
      sudo usermod -aG video $USER\
      sudo touch /etc/udev/rules.d/90-backlight.rules\
