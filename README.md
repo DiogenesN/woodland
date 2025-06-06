@@ -141,17 +141,17 @@ To disable this behavior you will need to set up at least one startup command in
 # Configuration
 Woodland creates the following configuration files:
 
-		~/.config/woodland/woodland.ini
-		~/.config/woodland/windows_sizes.db
+	~/.config/woodland/woodland.ini
+	~/.config/woodland/windows_sizes.db
 
   'windows_sizes.db' is automatically written on any window closing and storing the sizes before closing.\
   'woodland.ini' is very straightforward and self-explanatory but we will go through each section
 
   1. Welcome screen
 
-    [ Welcome screen ]\
+    [ Welcome screen ]
     If you have any weclome screen application then it goes here,
-    for instance you can use my welcome screen application like this:\
+    for instance you can use my welcome screen application like this:
     welcome_screen = welcomescreen --resolution 1920x1080
 
   2. Brightness
@@ -159,11 +159,11 @@ Woodland creates the following configuration files:
     [ Brightness ]
     In order for backlight to worl you have to do the following:\
 
-     sudo usermod -aG video $USER\
-     sudo touch /etc/udev/rules.d/90-backlight.rules\
-     sudo nano /etc/udev/rules.d/90-backlight.rules\
-     add the following to '90-backlight.rules':\
-     ACTION=="add", SUBSYSTEM=="backlight", KERNEL=="intel_backlight", RUN+="/bin/chgrp video /sys/class/backlight/intel_backlight/brightness", RUN+="/bin/chmod 664 /sys/class/backlight/intel_backlight/brightness"
+    sudo usermod -aG video $USER
+    sudo touch /etc/udev/rules.d/90-backlight.rules\
+    sudo nano /etc/udev/rules.d/90-backlight.rules\
+    add the following to '90-backlight.rules':\
+    ACTION=="add", SUBSYSTEM=="backlight", KERNEL=="intel_backlight", RUN+="/bin/chgrp video /sys/class/backlight/intel_backlight/brightness", RUN+="/bin/chmod 664 /sys/class/backlight/intel_backlight/brightness"
 
      d_power_path, the path to the file that controls the brightness level.\
      d_power_path = /sys/class/backlight/intel_backlight/brightness
