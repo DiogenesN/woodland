@@ -156,17 +156,17 @@ Woodland creates the following configuration files:
 
   2. Brightness
  
-         [ Brightness ]
-       In order for backlight to worl you have to do the following:
+     [ Brightness ]
+     In order for backlight to worl you have to do the following:\
 
-        sudo usermod -aG video $USER
-        sudo touch /etc/udev/rules.d/90-backlight.rules
-        sudo nano /etc/udev/rules.d/90-backlight.rules
-        add the following to '90-backlight.rules':
-        ACTION=="add", SUBSYSTEM=="backlight", KERNEL=="intel_backlight", RUN+="/bin/chgrp video /sys/class/backlight/intel_backlight/brightness", RUN+="/bin/chmod 664 /sys/class/backlight/intel_backlight/brightness"
+     sudo usermod -aG video $USER\
+     sudo touch /etc/udev/rules.d/90-backlight.rules\
+     sudo nano /etc/udev/rules.d/90-backlight.rules\
+     add the following to '90-backlight.rules':\
+     ACTION=="add", SUBSYSTEM=="backlight", KERNEL=="intel_backlight", RUN+="/bin/chgrp video /sys/class/backlight/intel_backlight/brightness", RUN+="/bin/chmod 664 /sys/class/backlight/intel_backlight/brightness"
 
-       d_power_path, the path to the file that controls the brightness level.
-       d_power_path = /sys/class/backlight/intel_backlight/brightness
+     d_power_path, the path to the file that controls the brightness level.
+     d_power_path = /sys/class/backlight/intel_backlight/brightness
 
   3. Background image
 
@@ -176,9 +176,9 @@ Woodland creates the following configuration files:
 
   4. Touchpan tap-to-click
 
-        [ Touchpad ]
-        Enable or disable tap to click (default enable).
-        tap_to_click = enable
+     [ Touchpad ]\
+     Enable or disable tap to click (default enable).\
+     tap_to_click = enable\
 
   5. Keyboard layouts
 
