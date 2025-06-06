@@ -1,234 +1,68 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-
 /* woodland */
 /* Minimal but functional Wayland compositor. */
 
-///#define _POSIX_C_SOURCE 200112L
 #define STB_IMAGE_IMPLEMENTATION // needed for background image implementation
 #define TOUCHPAD_SCROLL_SCALE 0.7 // Scaling factor for touchpad scrolls
 #define MOUSE_SCROLL_SCALE 1.0 // Scaling factor for mouse wheel scrolls
-#define SCROLL_DEBOUNCE_THRESHOLD 2.0 // Threshold to filter out small scroll values
+#define SCROLL_DEBOUNCE_THRESHOLD 3.0 // Threshold to filter out small scroll values
 #define MAX_NR_OF_STARTUP_COMMANDS 265 // maximum number of user defined startup commands
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+
+#define WL_LIST_SAFE_REMOVE(link)			\
+	do {									\
+		if ((link)->prev && (link)->next) { \
+			wl_list_remove(link);			\
+			(link)->prev = NULL;			\
+			(link)->next = NULL;			\
+		}									\
+	} while (0)
 
 /* Local headers */
+#include "menu.h"
+#include "panel.h"
 #include "runcmd.h"
+#include "woodland.h"
+#include "windowlist.h"
 #include "create-config.c"
 #include "getxkbkeyname.h"
 #include "getvaluefromconf.h"
 
-/* System headers */
-#include <time.h>
-#include <stdio.h>
-#include <ctype.h>
-#include <string.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <getopt.h>
-#include <stdbool.h>
-#include <libinput.h>
-#include <GLES3/gl3.h>
-#include <GLES3/gl32.h>
-#include <wlr/backend.h>
-#include <wlr/util/log.h>
-#include <stb/stb_image.h>
-#include <pixman-1/pixman.h>
-#include <wlr/util/region.h>
-#include <libdrm/drm_fourcc.h>
-#include <wlr/types/wlr_seat.h>
-#include <wlr/types/wlr_idle.h>
-#include <xkbcommon/xkbcommon.h>
-#include <wayland-server-core.h>
-#include <wlr/backend/session.h>
-#include <wlr/backend/libinput.h>
-#include <wlr/render/allocator.h>
-#include <wlr/types/wlr_matrix.h>
-#include <wlr/types/wlr_output.h>
-#include <wlr/types/wlr_cursor.h>
-#include <wlr/types/wlr_region.h>
-#include <wlr/types/wlr_pointer.h>
-#include <wlr/types/wlr_keyboard.h>
-#include <wlr/render/wlr_texture.h>
-#include <linux/input-event-codes.h>
-#include <wayland-server-protocol.h>
-#include <wlr/types/wlr_xdg_shell.h>
-#include <wlr/render/wlr_renderer.h>
-#include <wlr/types/wlr_compositor.h>
-#include <wlr/types/wlr_viewporter.h>
-#include <wlr/types/wlr_data_device.h>
-#include <wlr/types/wlr_input_device.h>
-#include <wlr/types/wlr_xdg_output_v1.h>
-#include <wlr/types/wlr_screencopy_v1.h>
-#include <wlr/types/wlr_output_layout.h>
-#include <wlr/types/wlr_layer_shell_v1.h>
-#include <wlr/types/wlr_xcursor_manager.h>
-#include <wlr/types/wlr_data_control_v1.h>
-#include <wlr/types/wlr_relative_pointer_v1.h>
-#include <wlr/types/wlr_virtual_keyboard_v1.h>
-#include <wlr/types/wlr_output_management_v1.h>
-#include <wlr/types/wlr_pointer_constraints_v1.h>
-#include <wlr/types/wlr_foreign_toplevel_management_v1.h>
+/**
+ *************** Helper functions *************** 
+ */
 
-/* For brevity's sake, struct members are annotated where they are used. */
-enum woodland_cursor_mode {
-	WOODLAND_CURSOR_PASSTHROUGH,
-	WOODLAND_CURSOR_MOVE,
-	WOODLAND_CURSOR_RESIZE,
+static struct wlr_linux_dmabuf_feedback_v1_tranche default_tranche = {
+	.target_device = 0,  // Auto-detect GPU
+	.flags = 0,		  // Default flags
+	///.formats = (struct wlr_drm_format_set) {0},
 };
 
-struct woodland_server {
-	struct wl_display *wl_display;
-	struct wlr_backend *backend;
-	struct wlr_renderer *renderer;
-	struct wlr_allocator *allocator;
-	struct wlr_compositor *compositor;
-	struct wlr_texture *background_texture;
-	// Timer
-	struct wl_event_source *timer;
-	struct wl_event_source *autostart_timer;
-	// XDG Shell
-	struct wl_list views;
-	struct wl_list minimized_views; // list for minimized views
-	struct wlr_xdg_shell *xdg_shell;
-	struct wl_listener new_xdg_surface;
-	// Idle
-	struct wlr_idle *idle;
-	struct wlr_idle_timeout *idle_timeout;
-	struct wlr_pointer *pointer;
-	struct wl_listener new_idle;
-	struct wl_listener idle_resume;
-	// Additional interfaces
-	// Layer shell
-	struct wl_list layer_surfaces;
-	struct wlr_layer_shell_v1 *layer_shell;
-	struct wl_listener new_layer_surface;
-	// Virtual Keyboard
-	struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard_mgr;
-	struct wl_listener new_virtual_keyboard;
-	// Foreign toplevel manager
-	struct wlr_foreign_toplevel_manager_v1 *wlr_foreign_toplevel_mgr;
-	// Output manager
-	struct wlr_output_manager_v1 *wlr_output_manager;
-	struct wl_listener output_configuration_applied;
-	struct wl_listener output_configuration_tested;
-	// Drag and drop
-	struct wl_listener start_drag;
-	struct wl_listener request_start_drag;
-	// Pointer constraints
-	struct wlr_pointer_constraints_v1 *wlr_pointer_constraints;
-	struct wlr_pointer_constraint_v1 *active_pointer_constraint;
-	struct wl_listener new_pointer_constraint;
-	struct wl_listener constraint_destroy;
-	// Relative pointer manager
-	struct wlr_relative_pointer_manager_v1 *wlr_relative_pointer_manager;
-	// Data control (clipboard)
-	struct wlr_data_control_manager_v1 *data_control_mgr;
-	struct wl_listener new_data_control;
-	struct wlr_cursor *cursor;
-	struct wl_listener cursor_axis;
-	struct wl_listener cursor_frame;
-	struct wl_listener cursor_motion;
-	struct wl_listener cursor_button;
-	struct wlr_xcursor_manager *cursor_mgr;
-	struct wl_listener cursor_motion_absolute;
-	struct wlr_seat *seat;
-	struct wl_list keyboards;
-	struct wlr_box grab_geobox;
-	struct wl_listener new_input;
-	struct wl_listener request_cursor;
-	struct wl_listener request_set_selection;
-	struct wl_list outputs;
-	struct wl_listener new_output;
-	struct wlr_output_layout *output_layout;
-	struct wlr_surface *prev_surface;
-	struct woodland_view *grabbed_view;
-	enum woodland_cursor_mode cursor_mode;
-	xkb_layout_index_t LayoutIndexes;
-	double grab_x;
-	double grab_y;
-	float matrix[9];
-	float background_matrix[9];
-	uint32_t modifier;
-	uint32_t resize_edges;
-	uint32_t saved_brightness;
-	bool idle_enabled;
-	bool should_render;
-	bool render_full_stop;
-	bool super_key_down;
-	bool keybind_handled;
-	bool layer_view_found;
-	char *config;
-	char *brightness_path;
-	char *play_pause;
-	char *volume_up;
-	char *volume_down;
-	char *volume_mute;
-	// Zooming
-	double zoom_speed;				// Speed of panning
-	double zoom_factor;				// How large the zooming area should be on one scroll
-	double pan_offset_x;			// Pan offset for x-axis
-	double pan_offset_y;			// Pan offset for y-axis
-	double zoom_edge_threshold;		// How far from screen edges the zoom pan should start
-	char *zoom_top_edge;			// set to enabled in woodland.ini to zoom on top left corcer
+static struct wlr_linux_dmabuf_feedback_v1 default_feedback = {
+	.main_device = 0,		   
+	.tranches.data = &default_tranche,  
+	.tranches.size = 1,		 
 };
 
-struct woodland_output {
-	struct wl_list link;
-	struct wl_listener frame;
-	struct wlr_output *wlr_output;
-	struct woodland_server *server;
-};
-
-struct woodland_view {
-	struct woodland_server *server;
-	struct wlr_xdg_surface *xdg_surface;
-	struct wl_list link;
-	struct wl_listener map;
-	struct wl_listener unmap;
-	struct wl_listener destroy;
-	struct wl_listener set_title;
-	struct wl_listener set_app_id;
-	struct wl_listener request_move;
-	struct wl_listener request_resize;
-	struct wl_listener foreign_destroy;
-	struct wl_listener foreign_minimize;
-	struct wl_listener request_minimize;
-	struct wl_listener request_fullscreen;
-	struct wl_listener foreign_activate_request;
-	struct wlr_foreign_toplevel_handle_v1 *foreign_toplevel;
-	xkb_layout_index_t keyboard_layout;
-	bool is_fullscreen;
-	bool mapped;
-	int original_x;
-	int original_y;
-	int original_width;
-	int original_height;
-	int x;
-	int y;
-};
-
-struct woodland_layer_view {
-	struct woodland_server *server;
-	struct wl_list link;
-	struct wl_listener map;
-	struct wl_listener unmap;
-	struct wl_listener commit;
-	struct wl_listener destroy;
-	struct wlr_layer_surface_v1 *layer_surface;
-	bool mapped;
-	double x;
-	double y;
-};
-
-struct woodland_keyboard {
-	struct woodland_server *server;
-	struct wl_list link;
-	struct wl_listener key;
-	struct wl_listener destroy;
-	struct wl_listener modifiers;
-	struct wlr_input_device *device;
-	bool destroyed;
-};
+// Refresh Wi-Fi network list
+static void refresh_networks(struct woodland_server *server) {
+	// Refreshing the list of available wifi networks
+	if (server->ssids[0] != NULL) {
+		for (size_t i = 0; server->ssids[i] != NULL; i++) {
+			///printf("In 'scan_network' freeing up SSID[%zu]: %s\n", i, server->ssids[i]);
+			free(server->ssids[i]); // Don't forget to free
+			server->ssids[i] = NULL;
+		}
+	}
+	fprintf(stderr, "Scanning for networks...\n");
+	server->number_of_ssids = list_wifi_devices(server->ssids, 256);
+	if (server->number_of_ssids <= 0) {
+		server->ssids[0] = strdup("No networks found! Is wifi enabled?");
+	}
+	fprintf(stderr, "Scanning done!\n");
+}
 
 /* Takes an index, looks for it in a string and then returns a new string with
  * the layout at the given index placed in the first position. The remaining
@@ -236,7 +70,7 @@ struct woodland_keyboard {
  * by commas. I use it to re-arrange the layouts to place the chosen layout
  * at position 0. It is needed in order to change the layout per application.
  */
-char *updated_layouts(char *index, char *layouts) {
+static char *updated_layouts(char *index, char *layouts) {
 	if (!index || !layouts) {
 		return NULL;
 	}
@@ -310,7 +144,7 @@ char *updated_layouts(char *index, char *layouts) {
 /* Given a number index, it looks through a string of words devided by comma
  * and returns the word at given index.
  */
-char *layout_name_from_index(int index, char *layouts) {
+static char *layout_name_from_index(int index, char *layouts) {
 	if (!layouts || index < 0) {
 		return NULL;
 	}
@@ -336,165 +170,6 @@ char *layout_name_from_index(int index, char *layouts) {
 
 	free(layouts_copy);
 	return layout_name;
-}
-
-/* brightness control */
-static int get_current_brightness(const char *path) {
-	int brightness = 1;
-	FILE *brightness_file = fopen(path, "r");
-	if (brightness_file != NULL) {
-		fscanf(brightness_file, "%d", &brightness);
-		fclose(brightness_file);
-	}
-    else {
-		wlr_log(WLR_ERROR, "Error in 'get_current_brightness' opening the file: %s", path);
-	}
-	return brightness;
-}
-
-static void set_brightness(int level, const char *path) {
-	FILE *brightness_file = fopen(path, "w");
-	if (brightness_file != NULL) {
-		fprintf(brightness_file, "%d", level);
-		fclose(brightness_file);
-	}
-    else {
-		wlr_log(WLR_ERROR, "Error in 'set_brightness' opening the file: %s", path);
-		return;
-	}
-}
-
-/* Handle idle event */
-static void server_new_idle(struct wl_listener *listener, void *data) {
-	(void)data;
-	struct woodland_server *server = wl_container_of(listener, server, new_idle);
-	if ((server->brightness_path) || (server->brightness_path != NULL)) {
-		server->saved_brightness = get_current_brightness(server->brightness_path);
-		set_brightness(0, server->brightness_path);
-	}
-	// Stop rendering on idle timeout
-	server->should_render = false;
-	wlr_log(WLR_INFO, "The system is idle now.");
-}
-
-/* Handle resume event */
-static void server_idle_resume(struct wl_listener *listener, void *data) {
-	(void)data;
-	struct woodland_server *server = wl_container_of(listener, server, idle_resume);
-	if ((server->brightness_path) || (server->brightness_path != NULL)) {
-		set_brightness(server->saved_brightness, server->brightness_path);
-	}
-	// Resume rendering when resumed from idle (either a mouse move or keyboard activity)
-	server->render_full_stop = false;
-	server->should_render = true;
-	// Schedule a new frame for each output
-	// we need this in order to resume the rendering function 'output_frame'
-	struct woodland_output *output;
-	wl_list_for_each(output, &server->outputs, link) {
-		wlr_output_schedule_frame(output->wlr_output);
-	}
-	wlr_log(WLR_INFO, "The system resumed from idle.");
-}
-
-// Function to update pan offset based on mouse position
-static void update_pan_offset(struct woodland_server *server,
-							  double mouse_x,
-							  double mouse_y,
-							  double screen_width,
-							  double screen_height) {
-	// Reset pan offsets if scaling factor is 1.0 (initial zoom level)
-	if ((server->zoom_factor - 0.2) <= 1.0) {
-		server->pan_offset_x = 0;
-		server->pan_offset_y = 0;
-		server->background_matrix[2] = 0; // Reset background x offset
-		server->background_matrix[5] = 0; // Reset background y offset
-		return;
-	}
-	// Check if the mouse is near the left edge of the screen
-	if (mouse_x < server->zoom_edge_threshold) {
-		// Pan left, ensuring we don't go past the screen's left boundary
-		if (server->pan_offset_x > 0) {
-			server->pan_offset_x = fmax(server->pan_offset_x - server->zoom_speed, 0);
-		}
-	}
-	// Check if the mouse is near the right edge of the screen
-	else if (mouse_x > screen_width - server->zoom_edge_threshold) {
-		// Pan right, ensuring we don't go past the scaled content's right boundary
-		double max_pan_x = screen_width * (server->zoom_factor - 1);
-		if (server->pan_offset_x < max_pan_x) {
-			server->pan_offset_x = fmin(server->pan_offset_x + server->zoom_speed, max_pan_x);
-		}
-	}
-	
-	// Check if the mouse is near the top edge of the screen
-	if (mouse_y < server->zoom_edge_threshold) {
-		// Pan up, ensuring we don't go past the screen's top boundary
-		if (server->pan_offset_y > 0) {
-			server->pan_offset_y = fmax(server->pan_offset_y - server->zoom_speed, 0);
-		}
-	}
-	// Check if the mouse is near the bottom edge of the screen
-	else if (mouse_y > screen_height - server->zoom_edge_threshold) {
-		// Pan down, ensuring we don't go past the scaled content's bottom boundary
-		double max_pan_y = screen_height * (server->zoom_factor - 1);
-		if (server->pan_offset_y < max_pan_y) {
-			server->pan_offset_y = fmin(server->pan_offset_y + server->zoom_speed, max_pan_y);
-		}
-	}
-}
-
-/* Drag and drop */
-/// Handle a request to start a drag event
-static void seat_request_start_drag(struct wl_listener *listener, void *data) {
-	struct wlr_seat_request_start_drag_event *event = data;
-	if (event == NULL) {
-		wlr_log(WLR_ERROR, "Received NULL event in seat_request_start_drag");
-		return;
-	}
-
-	struct woodland_server *server = wl_container_of(listener, server, request_start_drag);
-	if (server == NULL || server->seat == NULL) {
-		wlr_log(WLR_ERROR, "Received NULL server or seat in seat_request_start_drag");
-		return;
-	}
-
-	wlr_log(WLR_INFO, "Request to start dragging with event %p", event);
-
-	if (wlr_seat_validate_pointer_grab_serial(server->seat, event->origin, event->serial)) {
-		wlr_log(WLR_INFO, "Accepting drag start request");
-		wlr_seat_start_pointer_drag(server->seat, event->drag, event->serial);
-		return;
-	}
-
-	wlr_log(WLR_ERROR, "Ignoring request_start_drag, could not validate pointer serial %d",
-																			event->serial);
-	if (event->drag != NULL && event->drag->source != NULL) {
-		wlr_data_source_destroy(event->drag->source);
-	}
-}
-
-/// Handle a start_drag event
-static void seat_start_drag(struct wl_listener *listener, void *data) {
-	(void)data;
-
-	struct wlr_drag *drag = data;
-	if (drag == NULL) {
-		wlr_log(WLR_ERROR, "Received NULL drag in seat_start_drag");
-		return;
-	}
-
-	struct woodland_server *server = wl_container_of(listener, server, start_drag);
-	if (server == NULL || server->seat == NULL) {
-		wlr_log(WLR_ERROR, "Received NULL server or seat in seat_start_drag");
-		return;
-	}
-
-	wlr_log(WLR_INFO, "Starting drag");
-
-	// Don't actually do anything: the drag event becomes active in the wlr_seat and
-	// automatically does the right thing w.r.t passing this information through to
-	// surfaces
-	// wl_signal_add(&drag->events.destroy, &server->seat->drag.events.destroy);
 }
 
 static void change_keyboard_layout(struct woodland_server *server,
@@ -572,188 +247,284 @@ static void change_keyboard_layout(struct woodland_server *server,
 	}
 }
 
-static void focus_view(struct woodland_view *view, struct wlr_surface *surface) {
-	// Note: this function only deals with keyboard focus.
-	if (view == NULL || surface == NULL) {
-		wlr_log(WLR_ERROR, "focus_view called with NULL view or surface. view: %p, surface: %p",
-																			view, surface);
+static void focus_toplevel(struct woodland_view *toplevel) {
+	if (!toplevel) {
 		return;
 	}
 
-	// Get the seat and server associated with the view
-	struct woodland_server *server = view->server;
+	struct woodland_server *server = toplevel->server;
 	struct wlr_seat *seat = server->seat;
-	// Get the previously focused surface
-	struct wlr_surface *prev_surface = seat->keyboard_state.focused_surface;
-	// Notify the surface that it has entered the output
-	struct wlr_output *output = wlr_output_layout_output_at(server->output_layout,
-															server->cursor->x,
-															server->cursor->y);
-
-	wlr_log(WLR_INFO, "Focusing view: %p, surface: %p", view, surface);
-
-	// Check if a keyboard is available for the seat
-	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(seat);
-	if (!keyboard) {
-		wlr_log(WLR_ERROR, "No keyboard found for seat. Trying to reassign a keyboard.");
-		
-		// Forcefully reassign the first available keyboard
-		struct woodland_keyboard *new_keyboard = NULL;
-		struct woodland_keyboard *key;
-		wl_list_for_each(key, &server->keyboards, link) {
-			new_keyboard = key;
-			break;  // Pick the first available keyboard
-		}
-		
-		if (new_keyboard) {
-			wlr_seat_set_keyboard(seat, new_keyboard->device);
-			keyboard = new_keyboard->device->keyboard;
-			wlr_log(WLR_INFO, "Reassigned keyboard to seat: %p", keyboard);
-		}
-		else {
-			wlr_log(WLR_ERROR, "No available keyboard to assign to the seat.");
-			return;
-		}
-	}
-
-	if (prev_surface == surface) {
-		// Don't re-focus an already focused surface.
-		wlr_log(WLR_INFO, "Surface already focused: %p", surface);
+	struct wlr_surface *surface = toplevel->xdg_toplevel->base->surface;
+	//we use the keyboard to obtain the surface to which it was previosly attached;
+	struct wlr_surface *prev = seat->keyboard_state.focused_surface;
+	if (prev == surface) {
 		return;
 	}
-
-	if (prev_surface) {
-		struct wlr_xdg_surface *previous = wlr_xdg_surface_from_wlr_surface(prev_surface);
-		if (previous) {
-			// Deactivate the previously focused surface. This lets the client know
-			// it no longer has focus and the client will repaint accordingly, e.g.
-			// stop displaying a caret.
-
-			// Check if the surface is still mapped (i.e., not destroyed)
-			if (previous->surface && previous->surface->resource) {
-				wlr_log(WLR_INFO, "Deactivating previous surface: %p", previous);
-				wlr_xdg_toplevel_set_activated(previous, false);
-			}
-			else {
-				wlr_log(WLR_ERROR, "Previous surface is invalid or destroyed.");
-			}
-		}
-		else {
-			wlr_log(WLR_ERROR, "Previous surface is not a valid xdg_surface.");
+	if (prev) {
+		struct wlr_xdg_toplevel *prev_toplevel = wlr_xdg_toplevel_try_from_wlr_surface(prev);
+		if (prev_toplevel) {
+			wlr_xdg_toplevel_set_activated(prev_toplevel, false);
 		}
 	}
+	struct wlr_keyboard *kbd = wlr_seat_get_keyboard(seat);
+	wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
 
-	// Move the view to the front
-	if (view) {
-		if (!wl_list_empty(&view->link)) {
-			wl_list_remove(&view->link);
-			wl_list_insert(&server->views, &view->link);
-		}
+	// Only reorder if we're not in cycling mode.
+	if (!server->cycling_mode) {
+		WL_LIST_SAFE_REMOVE(&toplevel->link);
+		wl_list_insert(&server->toplevels, &toplevel->link);
+		// You might do the reordering only once.
+	}
+
+	wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
+	// Do not forcibly reinsert if cycling_mode is active.
+	if (!server->cycling_mode) {
+		WL_LIST_SAFE_REMOVE(&toplevel->link);
+		wl_list_insert(&server->toplevels, &toplevel->link);
+	}
+	wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, true);
+	if (kbd) {
+		wlr_seat_keyboard_notify_enter(seat, surface, kbd->keycodes, kbd->num_keycodes, &kbd->modifiers);
 		// Change keyboard layout per application
-		change_keyboard_layout(server, keyboard, view);
+		change_keyboard_layout(server, kbd, toplevel);
 	}
-	else {
-		wlr_log(WLR_ERROR, "'view' is NULL in 'focus_view.");
-		return;
-	}
-
-	// Activate the new surface
-	if (view->xdg_surface) {
-		wlr_xdg_toplevel_set_activated(view->xdg_surface, true);
-	}
-	else {
-		wlr_log(WLR_ERROR, "'xdg_surface' is NULL in 'focus_view.");
-		return;
-	}
-
-	// Tell the seat to have the keyboard enter this surface. wlroots will keep
-	// track of this and automatically send key events to the appropriate
-	// clients without additional work on your part.
-
-	wlr_seat_keyboard_notify_enter(seat,
-								   view->xdg_surface->surface,
-								   keyboard->keycodes,
-								   keyboard->num_keycodes,
-								   &keyboard->modifiers);
-
-	if (output) {
-		wlr_surface_send_enter(view->xdg_surface->surface, output);
-	}
-	
-	wlr_log(WLR_INFO, "View focused: %p", view);
 }
 
-/***************************** Keyboard management *****************************/
-static void keyboard_handle_destroy(struct wl_listener *listener, void *data) {
-	(void)data; // Suppress unused parameter warning
-	struct woodland_keyboard *keyboard = wl_container_of(listener, keyboard, destroy);
+static bool cycle_windows(struct woodland_server *server) {
+	int len = wl_list_length(&server->toplevels);
+	if (len < 2) {
+		return false;
+	}
 
-	// Add a flag to track if the keyboard is already destroyed
-	if (!keyboard || keyboard->destroyed) {
+	server->cycling_mode = true;
+
+	struct wlr_surface *focused = server->seat->keyboard_state.focused_surface;
+	struct woodland_view *current = NULL;
+	struct woodland_view *toplevel;
+
+	// Find currently focused view
+	wl_list_for_each(toplevel, &server->toplevels, link) {
+		if (toplevel->xdg_toplevel->base->surface == focused) {
+			current = toplevel;
+			break;
+		}
+	}
+
+	// Start cycling from the one after current (or from the start if no current)
+	struct woodland_view *iter = current ? wl_container_of(current->link.next, iter, link) : NULL;
+	if (!iter || &iter->link == &server->toplevels) {
+		iter = wl_container_of(server->toplevels.next, iter, link);
+	}
+
+	// Cycle through the list, skipping minimized views
+	struct woodland_view *start = iter;
+	do {
+		if (!iter->minimized) {
+			focus_toplevel(iter);
+			server->cycling_mode = false;
+			return true;
+		}
+		iter = wl_container_of(iter->link.next, iter, link);
+		if (&iter->link == &server->toplevels) {
+			iter = wl_container_of(server->toplevels.next, iter, link);
+		}
+	} while (iter != start);
+
+	// All windows might be minimized
+	server->cycling_mode = false;
+	return false;
+}
+
+static bool cycle_windows_reverse(struct woodland_server *server) {
+	int len = wl_list_length(&server->toplevels);
+	if (len < 2) {
+		return false;
+	}
+
+	server->cycling_mode = true;
+
+	struct wlr_surface *focused = server->seat->keyboard_state.focused_surface;
+	struct woodland_view *current = NULL;
+	struct woodland_view *toplevel;
+
+	// Find currently focused view
+	wl_list_for_each(toplevel, &server->toplevels, link) {
+		if (toplevel->xdg_toplevel->base->surface == focused) {
+			current = toplevel;
+			break;
+		}
+	}
+
+	// Start from previous of current, or last if current is NULL
+	struct woodland_view *iter;
+	if (current) {
+		iter = wl_container_of(current->link.prev, iter, link);
+		if (&iter->link == &server->toplevels) {
+			iter = wl_container_of(server->toplevels.prev, iter, link);
+		}
+	}
+	else {
+		iter = wl_container_of(server->toplevels.prev, iter, link);
+	}
+
+	struct woodland_view *start = iter;
+	do {
+		if (!iter->minimized) {
+			focus_toplevel(iter);
+			server->cycling_mode = false;
+			return true;
+		}
+		iter = wl_container_of(iter->link.prev, iter, link);
+		if (&iter->link == &server->toplevels) {
+			iter = wl_container_of(server->toplevels.prev, iter, link);
+		}
+	} while (iter != start);
+
+	// All views might be minimized
+	server->cycling_mode = false;
+	return false;
+}
+
+/* brightness control */
+static int get_current_brightness(const char *path) {
+	int brightness = 1;
+	FILE *brightness_file = fopen(path, "r");
+	if (brightness_file != NULL) {
+		fscanf(brightness_file, "%d", &brightness);
+		fclose(brightness_file);
+	}
+    else {
+		wlr_log(WLR_ERROR, "Error in 'get_current_brightness' opening the file: %s", path);
+	}
+	return brightness;
+}
+
+static void set_brightness(int level, const char *path) {
+	FILE *brightness_file = fopen(path, "w");
+	if (brightness_file != NULL) {
+		fprintf(brightness_file, "%d", level);
+		fclose(brightness_file);
+	}
+    else {
+		wlr_log(WLR_ERROR, "Error in 'set_brightness' opening the file: %s", path);
+		return;
+	}
+}
+
+/* Drag and drop */
+/// Handle a request to start a drag event
+static void seat_request_start_drag(struct wl_listener *listener, void *data) {
+	struct wlr_seat_request_start_drag_event *event = data;
+	if (event == NULL) {
+		wlr_log(WLR_ERROR, "Received NULL event in seat_request_start_drag");
 		return;
 	}
 
-	keyboard->destroyed = true;
-	wlr_log(WLR_INFO, "Destroying keyboard ...");
+	struct woodland_server *server = wl_container_of(listener, server, request_start_drag);
+	if (server == NULL || server->seat == NULL) {
+		wlr_log(WLR_ERROR, "Received NULL server or seat in seat_request_start_drag");
+		return;
+	}
 
-	// Remove listeners
-	if (!wl_list_empty(&keyboard->modifiers.link)) {
-		wl_list_remove(&keyboard->modifiers.link);
+	wlr_log(WLR_INFO, "Request to start dragging with event %p", event);
+
+	if (wlr_seat_validate_pointer_grab_serial(server->seat, event->origin, event->serial)) {
+		wlr_log(WLR_INFO, "Accepting drag start request");
+		wlr_seat_start_pointer_drag(server->seat, event->drag, event->serial);
+		return;
 	}
-	if (!wl_list_empty(&keyboard->key.link)) {
-		wl_list_remove(&keyboard->key.link);
+
+	wlr_log(WLR_ERROR, "Ignoring request_start_drag, could not validate pointer serial %d",
+																			event->serial);
+	if (event->drag != NULL && event->drag->source != NULL) {
+		wlr_data_source_destroy(event->drag->source);
 	}
-	if (!wl_list_empty(&keyboard->destroy.link)) {
-		wl_list_remove(&keyboard->destroy.link);
+}
+
+/// Handle a start_drag event
+static void seat_start_drag(struct wl_listener *listener, void *data) {
+	(void)data;
+
+	struct wlr_drag *drag = data;
+	if (drag == NULL) {
+		wlr_log(WLR_ERROR, "Received NULL drag in seat_start_drag");
+		return;
 	}
-	// Unset the keyboard for the seat if this is the active keyboard
-	if (wlr_seat_get_keyboard(keyboard->server->seat) == keyboard->device->keyboard) {
-		wlr_seat_set_keyboard(keyboard->server->seat, NULL);
+
+	struct woodland_server *server = wl_container_of(listener, server, start_drag);
+	if (server == NULL || server->seat == NULL) {
+		wlr_log(WLR_ERROR, "Received NULL server or seat in seat_start_drag");
+		return;
 	}
-	// Remove the keyboard from the server's list of keyboards
-	if (!wl_list_empty(&keyboard->link)) {
-		wl_list_remove(&keyboard->link);
-	}
-	// Free the keyboard struct and set the pointer to NULL
-	if (keyboard) {
-		free(keyboard);
-		keyboard = NULL;
-	}
-    wlr_log(WLR_INFO, "Destroying keyboard done!");
+
+	wlr_log(WLR_INFO, "Starting drag");
+
+	// Don't actually do anything: the drag event becomes active in the wlr_seat and
+	// automatically does the right thing w.r.t passing this information through to
+	// surfaces
+	// wl_signal_add(&drag->events.destroy, &server->seat->drag.events.destroy);
+}
+
+/* Pointer constraints */
+static void handle_pointer_constraint_destroy(struct wl_listener *listener, void *data) {
+	struct woodland_server *server = wl_container_of(listener, server, constraint_destroy);
+	struct wlr_pointer_constraint_v1 *constraint = data;
+
+	// Deactivate the constraint
+	wlr_pointer_constraint_v1_send_deactivated(constraint);
+
+	// Clean up
+	server->active_pointer_constraint = NULL;
+}
+
+static void handle_new_pointer_constraint(struct wl_listener *listener, void *data) {
+	struct woodland_server *server = wl_container_of(listener, server, new_pointer_constraint);
+	struct wlr_pointer_constraint_v1 *constraint = data;
+
+	// You might want to store the constraint in your server struct or elsewhere
+	server->active_pointer_constraint = constraint;
+
+	// Activate the constraint
+	wlr_pointer_constraint_v1_send_activated(constraint);
+
+	// Set up listener for constraint destruction
+	wl_signal_add(&constraint->events.destroy, &server->constraint_destroy);
+	server->constraint_destroy.notify = handle_pointer_constraint_destroy;
+}
+
+/* Input devices */
+static void keyboard_handle_destroy(struct wl_listener *listener, void *data) {
+	// This event is raised by the keyboard base wlr_input_device to signal
+	// the destruction of the wlr_keyboard. It will no longer receive events
+	// and should be destroyed.
+	(void)data;
+	struct woodland_keyboard *keyboard = wl_container_of(listener, keyboard, destroy);
+	WL_LIST_SAFE_REMOVE(&keyboard->modifiers.link);
+	WL_LIST_SAFE_REMOVE(&keyboard->key.link);
+	WL_LIST_SAFE_REMOVE(&keyboard->destroy.link);
+	WL_LIST_SAFE_REMOVE(&keyboard->link);
+	free(keyboard);
 }
 
 static void keyboard_handle_modifiers(struct wl_listener *listener, void *data) {
-	struct wlr_keyboard_modifiers *modifiers = data;
-	if (!modifiers) {
-		wlr_log(WLR_ERROR, "Received NULL modifiers data.");
-		return;
-	}
-
-	// Log the received modifiers for debugging
-	///\wlr_log(WLR_INFO, "Modifiers updated: depressed=0x%x, latched=0x%x, locked=0x%x,
-	///group=%d", modifiers->depressed, modifiers->latched, modifiers->locked, modifiers->group);
-
-	///fprintf(stderr, "Modifiers updated: depressed=0x%x, latched=0x%x, locked=0x%x, group=%d",
-	///	modifiers->depressed, modifiers->latched, modifiers->locked, modifiers->group);
-
-	// Set the keyboard for the seat
+	// This event is raised when a modifier key, such as shift or alt, is
+	// pressed. We simply communicate this to the client. */
+	(void)data;
 	struct woodland_keyboard *keyboard = wl_container_of(listener, keyboard, modifiers);
-	if (keyboard && keyboard->device) {
-		wlr_seat_set_keyboard(keyboard->server->seat, keyboard->device);
-		// Notify the seat with the updated modifiers
-		wlr_seat_keyboard_notify_modifiers(keyboard->server->seat,
-							&keyboard->device->keyboard->modifiers);
-	}
-	else {
-		wlr_log(WLR_ERROR, "'keyboard' or 'device' is NULL in 'keyboard_handle_modifiers'.");
-	}
+	// A seat can only have one keyboard, but this is a limitation of the
+	// Wayland protocol - not wlroots. We assign all connected keyboards to the
+	// same seat. You can swap out the underlying wlr_keyboard like this and
+	// wlr_seat handles this transparently.
+	wlr_seat_set_keyboard(keyboard->server->seat, keyboard->wlr_keyboard);
+
+	// Send modifiers to the client.
+	wlr_seat_keyboard_notify_modifiers(keyboard->server->seat, &keyboard->wlr_keyboard->modifiers);
 }
 
 /* This function parses the config file (woodland.ini) and storing all
  * user defined keyboard shortcuts (keys) in a char array
  */
-static void keybindings_group_init(char *config, char *modifierName, char **keynames,
-																char **keycommands) {
+static void keybindings_group_init(char *config, char *modifierName, char **keynames, char **keycommands) {
 	FILE *file = fopen(config, "r");
 	if (!file) {
 		perror("Error opening file");
@@ -855,23 +626,12 @@ static void process_keybindings(struct woodland_server *server, char *config, ch
 static bool handle_keybinding_alt(struct woodland_server *server, xkb_keysym_t sym) {
 	// This function assumes Alt is held down.
 	// Get the current view and the next view
-	struct woodland_view *current_view = wl_container_of(server->views.next, current_view, link);
+	struct woodland_view *current_view = wl_container_of(server->toplevels.next, current_view, link);
 	struct woodland_view *next_view = wl_container_of(current_view->link.next, next_view, link);
 	switch (sym) {
 	case XKB_KEY_Tab: // Alt+Tab cycle to the next view
-		if (wl_list_length(&server->views) < 2) {
-			break;
-		}
-		if (next_view) {
-			server->keybind_handled = true;
-			focus_view(next_view, next_view->xdg_surface->surface);
-			/* Move the previous view to the end of the list */
-			wl_list_remove(&current_view->link);
-			wl_list_insert(server->views.prev, &current_view->link);
-		}
-		else {
-			wlr_log(WLR_ERROR, "'next_view' is NULL in 'handle_keybinding_alt'");
-		}
+		server->keybind_handled = true;
+		cycle_windows(server);
 		break;
 	default:
 		// Executing user defined shortcuts from config file
@@ -897,24 +657,25 @@ static bool handle_keybinding_shift(struct woodland_server *server, xkb_keysym_t
 	return true;
 }
 
+ /**
+ * Here we handle compositor keybindings. This is when the compositor is
+ * processing keys, rather than passing them on to the client for its own processing.
+ *
+ * This function assumes Super is held down.
+ */
 static bool handle_keybinding_super(struct woodland_server *server, xkb_keysym_t sym) {
-	/*
-	 * Here we handle compositor keybindings. This is when the compositor is
-	 * processing keys, rather than passing them on to the client for its own
-	 * processing.
-	 *
-	 * This function assumes Super is held down.
-	 */
 	// Get the current view and the next view
-	struct woodland_view *current_view = wl_container_of(server->views.next, current_view, link);
+	struct woodland_view *current_view = wl_container_of(server->toplevels.next, current_view, link);
 	struct woodland_view *next_view = wl_container_of(current_view->link.next, next_view, link);
 	switch (sym) {
 	case XKB_KEY_Escape: // Super+Esc Log out from compositor
+		server->keybind_handled = true;
 		wl_display_terminate(server->wl_display);
 		break;
 	case XKB_KEY_x: // Super+x close current active window
-		if (!wl_list_empty(&server->views)) {
-			wlr_xdg_toplevel_send_close(current_view->xdg_surface);
+		if (!wl_list_empty(&server->toplevels)) {
+			server->keybind_handled = true;
+			wlr_xdg_toplevel_send_close(current_view->xdg_toplevel);
 		}
 		break;
 	default:
@@ -926,37 +687,19 @@ static bool handle_keybinding_super(struct woodland_server *server, xkb_keysym_t
 }
 
 static void keyboard_handle_key(struct wl_listener *listener, void *data) {
-	// NULL checks for listener and data
-	if (!listener || !data) {
-		wlr_log(WLR_ERROR, "'listener' or 'data' is NULL in 'keyboard_handle_key'");
-		return;
-	}
-	
-	struct wlr_event_keyboard_key *event = data;
-	struct woodland_keyboard *keyboard = wl_container_of(listener, keyboard, key);
-	// NULL check for keyboard and server
-	if (!keyboard || !keyboard->server) {
-		wlr_log(WLR_ERROR, "'keyboard' or 'server' is NULL in 'keyboard_handle_key'");
-		return;
-	}
-	
-	struct wlr_session *session = wlr_backend_get_session(keyboard->server->backend);
+	/* This event is raised when a key is pressed or released. */
+	struct woodland_keyboard *keyboard =wl_container_of(listener, keyboard, key);
+	struct woodland_server *server = keyboard->server;
+	struct wlr_keyboard_key_event *event = data;
+	///struct wlr_seat *seat = server->seat;
 
-	// Translate libinput keycode to xkbcommon keycode
-	const xkb_keysym_t *syms = NULL;
-	xkb_keycode_t keycode = event->keycode + 8;
-	
-	// Get a list of keysyms based on the keymap for this keyboard
-	int nsyms = xkb_state_key_get_syms(keyboard->device->keyboard->xkb_state, keycode, &syms);
-	if (nsyms < 1 || !syms) {
-		wlr_log(WLR_ERROR, "Failed to get keysyms in 'keyboard_handle_key'");
-		return;
-	}
-	
-	uint32_t modifiers = wlr_keyboard_get_modifiers(keyboard->device->keyboard);
-	keyboard->server->modifier = modifiers;
+	/* Translate libinput keycode -> xkbcommon */
+	uint32_t keycode = event->keycode + 8;
+	/* Get a list of keysyms based on the keymap for this keyboard */
+	const xkb_keysym_t *syms;
+	int nsyms = xkb_state_key_get_syms(keyboard->wlr_keyboard->xkb_state, keycode, &syms);
 
-	// Translate the key symbol code into a key name as defined in the header
+	uint32_t modifiers = wlr_keyboard_get_modifiers(keyboard->wlr_keyboard);
 	char hexCode[256];
 	snprintf(hexCode, sizeof(hexCode), "%#06x", syms[0]);
 	char *keyname = xkb_keyname(hexCode);
@@ -968,9 +711,54 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 
 	for (int i = 0; i < nsyms; i++) {
 		if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+			// Typing the password
+			if (server->network_password_prompt) {
+				char name[64];
+				if (xkb_keysym_get_name(syms[i], name, sizeof(name)) > 0) {
+					// Skip known modifiers
+					if (strcmp(name, "Shift_L") == 0 || strcmp(name, "Shift_R") == 0 ||
+						strcmp(name, "Control_L") == 0 || strcmp(name, "Control_R") == 0 ||
+						strcmp(name, "Alt_L") == 0 || strcmp(name, "Alt_R") == 0 ||
+						strcmp(name, "Super_L") == 0 || strcmp(name, "Super_R") == 0 ||
+						strcmp(name, "Meta_L") == 0 || strcmp(name, "Meta_R") == 0 ||
+						strcmp(name, "Caps_Lock") == 0) {
+						continue;
+					}
+					char str_buff[8];
+					int len = xkb_keysym_to_utf8(syms[i], str_buff, sizeof(str_buff));
+
+					if (syms[i] == XKB_KEY_BackSpace) {
+						size_t buflen = strlen(server->buff);
+						if (buflen > 0) {
+							while (buflen > 0 && ((server->buff[buflen - 1] & 0xC0) == 0x80)) {
+								buflen = buflen - 1;
+							}
+							server->buff[--buflen] = '\0';
+						}
+						if (server->ssids[3]) {
+							free(server->ssids[3]);
+							server->ssids[3] = NULL;
+						}
+						server->ssids[3] = strdup(server->buff);
+					}
+					else if (len > 0) {
+						if (!server->buff[0]) {
+							strncpy(server->buff, str_buff, sizeof(server->buff) - 1);
+						}
+						else {
+							strncat(server->buff, str_buff, sizeof(server->buff) - strlen(server->buff) - 1);
+						}
+						if (server->ssids[3]) {
+							free(server->ssids[3]);
+							server->ssids[3] = NULL;
+						}
+						server->ssids[3] = strdup(server->buff);
+					}
+				}
+			}
 			// Change keyboard layout
 			if (syms[i] == XKB_KEY_ISO_Next_Group) {
-				struct woodland_view *current_view = wl_container_of(keyboard->server->views.next,
+				struct woodland_view *current_view = wl_container_of(keyboard->server->toplevels.next,
 																	 current_view,
 																	 link);
 				if (current_view && keyboard->server->seat->keyboard_state.keyboard->xkb_state) {
@@ -1023,69 +811,72 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 				return;
 			}
 			else if (syms[i] == XKB_KEY_XF86Switch_VT_1) {
-				wlr_session_change_vt(session, 1);
+				wlr_session_change_vt(server->session, 1);
 				return;
 			}
 			else if (syms[i] == XKB_KEY_XF86Switch_VT_2) {
-				wlr_session_change_vt(session, 2);
+				wlr_session_change_vt(server->session, 2);
 				return;
 			}
 		}
 		// Check if the Super key is pressed or released
 		if (syms[i] == XKB_KEY_Super_L || syms[i] == XKB_KEY_Super_R) {
 			keyboard->server->super_key_down = (event->state == WL_KEYBOARD_KEY_STATE_PRESSED);
+			if (server->display_is_off) {
+				///fprintf(stderr, "Super key pressed!\n");
+				server->display_is_off = false;
+				struct woodland_output *output;
+				wl_list_for_each(output, &server->outputs, link) {
+					struct wlr_output_state state;
+					wlr_output_state_init(&state);
+					wlr_output_state_set_enabled(&state, true);
+					if (!wlr_output_commit_state(output->wlr_output, &state)) {
+						fprintf(stderr, "Display off failed to commit output state\n");
+					}
+					wlr_output_state_finish(&state);
+					wlr_output_schedule_frame(output->wlr_output);
+				}
+			}
 		}
 		// Handle compositor keybindings
 		else if (keyname) {
 			if ((modifiers & WLR_MODIFIER_ALT) && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 				handle_keybinding_alt(keyboard->server, syms[i]);
 			}
-			else if ((modifiers & WLR_MODIFIER_CTRL) && \
-					event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+			else if ((modifiers & WLR_MODIFIER_CTRL) && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 				handle_keybinding_ctrl(keyboard->server, syms[i]);
 			}
-			else if ((modifiers & WLR_MODIFIER_SHIFT) && \
-					event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+			else if ((modifiers & WLR_MODIFIER_SHIFT) && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 				handle_keybinding_shift(keyboard->server, syms[i]);
 			}
-			else if ((modifiers & WLR_MODIFIER_LOGO) && \
-					event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+			else if ((modifiers & WLR_MODIFIER_LOGO) && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 				handle_keybinding_super(keyboard->server, syms[i]);
 			}
 		}
 	}
-
 	// Clean up keyname memory
 	if (keyname) {
 		free(keyname);
 		keyname = NULL;
 	}
-
 	// Pass the key to the client if not handled by keybindings
 	if (!keyboard->server->keybind_handled) {
-		wlr_seat_set_keyboard(keyboard->server->seat, keyboard->device);
+		wlr_seat_set_keyboard(server->seat, keyboard->wlr_keyboard);
 		wlr_seat_keyboard_notify_key(keyboard->server->seat,
 									 event->time_msec,
 									 event->keycode,
 									 event->state);
 	}
-
-	// Send the keyboard activity event to idle manager
-	if (keyboard->server->idle && keyboard->server->seat) {
-		wlr_idle_notify_activity(keyboard->server->idle, keyboard->server->seat);
-	}
-	else {
-		wlr_log(WLR_ERROR, "'idle' or 'seat' is NULL in 'keyboard_handle_key'");
-	}
 }
 
 static void server_new_keyboard(struct woodland_server *server, struct wlr_input_device *device) {
-	struct woodland_keyboard *keyboard = calloc(1, sizeof(struct woodland_keyboard));
-	if (!keyboard) {
-		wlr_log(WLR_ERROR, "Failed to allocate woodland_keyboard.");
-		return;
-	}
-	keyboard->destroyed = false;
+	struct wlr_keyboard *wlr_keyboard = wlr_keyboard_from_input_device(device);
+	struct woodland_keyboard *keyboard = calloc(1, sizeof(*keyboard));
+	keyboard->server = server;
+	keyboard->wlr_keyboard = wlr_keyboard;
+
+	/* We need to prepare an XKB keymap and assign it to the keyboard. This
+	 * assumes the defaults (e.g. layout = "us"). */
 	char *layouts = get_char_value_from_conf(server->config, "xkb_layouts");
 	if (!layouts) {
 		wlr_log(WLR_ERROR, "Error: Keyboard layouts could not be loaded from config\n");
@@ -1113,21 +904,24 @@ static void server_new_keyboard(struct woodland_server *server, struct wlr_input
 		free(layouts);
 		return;
 	}
-	keyboard->server = server;
-	keyboard->device = device;
-	wlr_keyboard_set_keymap(device->keyboard, keymap);
-	wlr_keyboard_set_repeat_info(device->keyboard, 30, 300);
-	// Set up listeners for keyboard events
-	keyboard->key.notify = keyboard_handle_key;
-	wl_signal_add(&device->keyboard->events.key, &keyboard->key);
+
+	wlr_keyboard_set_keymap(wlr_keyboard, keymap);
+	wlr_keyboard_set_repeat_info(wlr_keyboard, 25, 600);
+
+	/* Here we set up listeners for keyboard events. */
 	keyboard->modifiers.notify = keyboard_handle_modifiers;
-	wl_signal_add(&device->keyboard->events.modifiers, &keyboard->modifiers);
+	wl_signal_add(&wlr_keyboard->events.modifiers, &keyboard->modifiers);
+	keyboard->key.notify = keyboard_handle_key;
+	wl_signal_add(&wlr_keyboard->events.key, &keyboard->key);
 	keyboard->destroy.notify = keyboard_handle_destroy;
-	wl_signal_add(&device->keyboard->events.destroy, &keyboard->destroy);
-	// Set the keyboard for the seat
-	wlr_seat_set_keyboard(server->seat, device);
-	// Add the keyboard to the list of keyboards
+	wl_signal_add(&device->events.destroy, &keyboard->destroy);
+
+	wlr_seat_set_keyboard(server->seat, keyboard->wlr_keyboard);
+	wlr_seat_set_capabilities(server->seat, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
+
+	// And add the keyboard to our list of keyboards
 	wl_list_insert(&server->keyboards, &keyboard->link);
+
 	// Clean up
 	xkb_keymap_unref(keymap);
 	xkb_context_unref(context);
@@ -1135,86 +929,6 @@ static void server_new_keyboard(struct woodland_server *server, struct wlr_input
 	
 	keyboard->server->LayoutIndexes = xkb_keymap_num_layouts(
 								keyboard->server->seat->keyboard_state.keyboard->keymap);
-}
-
-static void server_new_pointer(struct woodland_server *server, struct wlr_input_device *device) {
-	/* We don't do anything special with pointers. All of our pointer handling
-	 * is proxied through wlr_cursor. On another compositor, you might take this
-	 * opportunity to do libinput configuration on the device to set
-	 * acceleration, etc. */
-	wlr_cursor_attach_input_device(server->cursor, device);
-}
-
-// Function to enable tap-to-click on a libinput device
-void enable_tap_to_click(struct wlr_input_device *device) {
-	if (device->type == WLR_INPUT_DEVICE_POINTER) {
-		struct libinput_device *libinput_dev = wlr_libinput_get_device_handle(device);
-		if (libinput_dev && libinput_device_config_tap_get_finger_count(libinput_dev) > 0) {
-			libinput_device_config_tap_set_enabled(libinput_dev, LIBINPUT_CONFIG_TAP_ENABLED);
-		}
-	}
-}
-
-static void server_new_input(struct wl_listener *listener, void *data) {
-	/* This event is raised by the backend when a new input device becomes available. */
-	struct wlr_input_device *device = data;
-	if ((!device) || (device == NULL)) {
-		wlr_log(WLR_ERROR, "'device is nULL in 'server_new_input'");
-		return;
-	}
-	struct woodland_server *server = wl_container_of(listener, server, new_input);
-	switch (device->type) {
-		case WLR_INPUT_DEVICE_KEYBOARD:
-			server_new_keyboard(server, device);
-			break;
-		case WLR_INPUT_DEVICE_POINTER:
-			enable_tap_to_click(device);  // Enable tap-to-click for pointer devices
-			server_new_pointer(server, device);
-			break;
-		default:
-			break;
-	}
-
-	/* We need to let the wlr_seat know what our capabilities are, which is
-	 * communicated to the client. In TinyWL we always have a cursor, even if
-	 * there are no pointer devices, so we always include that capability. */
-	uint32_t caps = WL_SEAT_CAPABILITY_POINTER;
-	if (!wl_list_empty(&server->keyboards)) {
-		caps |= WL_SEAT_CAPABILITY_KEYBOARD;
-	}
-	wlr_seat_set_capabilities(server->seat, caps);
-}
-
-/* Function to handle the destruction of virtual keyboards */
-static void virtual_keyboard_destroy_handler(struct wl_listener *listener, void *data) {
-	(void)data;
-	struct woodland_keyboard *keyboard = wl_container_of(listener, keyboard, destroy);
-	if (!keyboard) {
-		wlr_log(WLR_ERROR, "Keyboard destroy handler called with NULL keyboard.");
-		return;
-	}
-
-	wlr_log(WLR_INFO, "Destroying virtual keyboard: %p", keyboard);
-
-	// Clean up listeners
-	if (!wl_list_empty(&keyboard->modifiers.link)) {
-		wl_list_remove(&keyboard->modifiers.link);
-	}
-	if (!wl_list_empty(&keyboard->key.link)) {
-		wl_list_remove(&keyboard->key.link);
-	}
-	if (!wl_list_empty(&keyboard->destroy.link)) {
-		wl_list_remove(&keyboard->destroy.link);
-	}
-
-	// Optionally reset the keyboard device if needed
-	///keyboard->device = NULL; // Uncomment if required
-
-	// Free the keyboard object
-	if (keyboard) {
-		free(keyboard);
-		keyboard = NULL;
-	}
 }
 
 static void new_virtual_keyboard_handler(struct wl_listener *listener, void *data) {
@@ -1233,9 +947,10 @@ static void new_virtual_keyboard_handler(struct wl_listener *listener, void *dat
 		wlr_log(WLR_ERROR, "'keyboard' memory alloc failed in 'new_virtual_keyboard_handler'.");
 		return;
 	}
-	
+
 	keyboard->server = server;
-	keyboard->device = &virtual_keyboard->input_device;
+	keyboard->wlr_keyboard = &virtual_keyboard->keyboard;
+	keyboard->device = &virtual_keyboard->keyboard.base;
 
 	/* We need to prepare an XKB keymap and assign it to the keyboard. This
 	 * assumes the defaults (e.g. layout = "us"). */
@@ -1244,41 +959,82 @@ static void new_virtual_keyboard_handler(struct wl_listener *listener, void *dat
 		wlr_log(WLR_ERROR, "'context' is NULL in 'new_virtual_keyboard_handler'.");
 		return;
 	}
-	struct xkb_keymap *keymap = xkb_keymap_new_from_names(context, NULL,
-																XKB_KEYMAP_COMPILE_NO_FLAGS);
+	struct xkb_keymap *keymap = xkb_keymap_new_from_names(context, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
 	if ((!keymap) || (keymap == NULL)) {
 		wlr_log(WLR_ERROR, "'keymap' is NULL in 'new_virtual_keyboard_handler'.");
 		return;
 	}
 
 	/* Dereference the keyboard pointer */
-	wlr_keyboard_set_keymap(keyboard->device->keyboard, keymap);
-	wlr_keyboard_set_repeat_info(keyboard->device->keyboard, 30, 300);
+	wlr_keyboard_set_keymap(&virtual_keyboard->keyboard, keymap);
+	wlr_keyboard_set_repeat_info(&virtual_keyboard->keyboard, 30, 300);
 
 	/* Set up listeners for keyboard events. */
 	keyboard->modifiers.notify = keyboard_handle_modifiers;
-	wl_signal_add(&keyboard->device->keyboard->events.modifiers, &keyboard->modifiers);
+	wl_signal_add(&virtual_keyboard->keyboard.events.modifiers, &keyboard->modifiers);
 	keyboard->key.notify = keyboard_handle_key;
-	wl_signal_add(&keyboard->device->keyboard->events.key, &keyboard->key);
+	wl_signal_add(&virtual_keyboard->keyboard.events.key, &keyboard->key);
+	keyboard->destroy.notify = keyboard_handle_destroy;
+	wl_signal_add(&virtual_keyboard->keyboard.base.events.destroy, &keyboard->destroy);
 
-	/* Set up listener for the destroy event */
-	keyboard->destroy.notify = virtual_keyboard_destroy_handler;
-	wl_signal_add(&virtual_keyboard->events.destroy, &keyboard->destroy);
-
-	wlr_seat_set_keyboard(server->seat, keyboard->device);
+	wlr_seat_set_keyboard(server->seat, &virtual_keyboard->keyboard);
 	xkb_keymap_unref(keymap);
 	xkb_context_unref(context);
 	wlr_log(WLR_INFO, "Virtual keyboard initialized: %p", virtual_keyboard);
 }
 
+// Function to enable tap-to-click on a libinput device
+static void enable_tap_to_click(struct wlr_input_device *device) {
+	if (device->type == WLR_INPUT_DEVICE_POINTER) {
+		struct libinput_device *libinput_dev = wlr_libinput_get_device_handle(device);
+		if (libinput_dev && libinput_device_config_tap_get_finger_count(libinput_dev) > 0) {
+			libinput_device_config_tap_set_enabled(libinput_dev, LIBINPUT_CONFIG_TAP_ENABLED);
+		}
+	}
+}
+
+/**
+ * We don't do anything special with pointers. All of our pointer handling
+ * is proxied through wlr_cursor. On another compositor, you might take this
+ * opportunity to do libinput configuration on the device to set
+ * acceleration, etc.
+ */
+static void server_new_pointer(struct woodland_server *server, struct wlr_input_device *device) {
+	wlr_cursor_attach_input_device(server->cursor, device);
+}
+
+static void server_new_input(struct wl_listener *listener, void *data) {
+	/* This event is raised by the backend when a new input device becomes
+	 * available. */
+	struct woodland_server *server = wl_container_of(listener, server, new_input);
+	struct wlr_input_device *device = data;
+	switch (device->type) {
+	case WLR_INPUT_DEVICE_KEYBOARD:
+		server_new_keyboard(server, device);
+		break;
+	case WLR_INPUT_DEVICE_POINTER:
+		server_new_pointer(server, device);
+		if (strcmp(server->tap_enable, "enable") == 0) {
+			enable_tap_to_click(device);  // Enable tap-to-click for pointer devices
+		}
+		break;
+	default:
+		break;
+	}
+	/* We need to let the wlr_seat know what our capabilities are, which is
+	 * communiciated to the client. In TinyWL we always have a cursor, even if
+	 * there are no pointer devices, so we always include that capability. */
+	uint32_t caps = WL_SEAT_CAPABILITY_POINTER;
+	if (!wl_list_empty(&server->keyboards)) {
+		caps |= WL_SEAT_CAPABILITY_KEYBOARD;
+	}
+	wlr_seat_set_capabilities(server->seat, caps);
+}
+
 static void seat_request_cursor(struct wl_listener *listener, void *data) {
+	struct woodland_server *server = wl_container_of(listener, server, request_cursor);
 	/* This event is raised by the seat when a client provides a cursor image */
 	struct wlr_seat_pointer_request_set_cursor_event *event = data;
-	if ((!event) || (event == NULL)) {
-		wlr_log(WLR_ERROR, "'event' is NULL in 'seat_request_cursor'.");
-		return;
-	}
-	struct woodland_server *server = wl_container_of(listener, server, request_cursor);
 	struct wlr_seat_client *focused_client = server->seat->pointer_state.focused_client;
 	/* This can be sent by any client, so we check to make sure this one is
 	 * actually has pointer focus first. */
@@ -1287,329 +1043,474 @@ static void seat_request_cursor(struct wl_listener *listener, void *data) {
 		 * provided surface as the cursor image. It will set the hardware cursor
 		 * on the output that it's currently on and continue to do so as the
 		 * cursor moves between outputs. */
-		wlr_cursor_set_surface(server->cursor,
-							   event->surface,
-							   event->hotspot_x,
-							   event->hotspot_y);
+		wlr_cursor_set_surface(server->cursor, event->surface, event->hotspot_x, event->hotspot_y);
 	}
 }
 
+ /**
+ * This event is raised by the seat when a client wants to set the selection,
+ * usually when the user copies something. wlroots allows compositors to
+ * ignore such requests if they so choose, but in tinywl we always honor
+ */
 static void seat_request_set_selection(struct wl_listener *listener, void *data) {
-	/* This event is raised by the seat when a client wants to set the selection,
-	 * usually when the user copies something. wlroots allows compositors to
-	 * ignore such requests if they so choose, but in woodland it's always honored
-	 */
-	struct wlr_seat_request_set_selection_event *event = data;
-	if ((!event) || (event == NULL)) {
-		wlr_log(WLR_ERROR, "'event' is NULL in 'seat_request_set_selection'.");
-		return;
-	}
 	struct woodland_server *server = wl_container_of(listener, server, request_set_selection);
+	struct wlr_seat_request_set_selection_event *event = data;
 	wlr_seat_set_selection(server->seat, event->source, event->serial);
 }
+/* End of input devices setup */
 
-/* XDG and Layer Views */
-static bool view_layer_at(struct woodland_layer_view *layer_view, double lx, double ly,
-						  struct wlr_surface **surface, double *sx, double *sy) {
-	if ((!layer_view) || (layer_view == NULL)) {
-		wlr_log(WLR_ERROR, "Empty 'layer_view' in 'view_layer_at'!");
-		return false;
-	}
-	if ((!surface) || (surface == NULL)) {
-		wlr_log(WLR_ERROR, "Empty 'surface' in 'view_layer_at'!");
-		return false;
-	}
-	double _sx;
-	double _sy;
-	double view_sx = lx - layer_view->x;;
-	double view_sy = ly - layer_view->y;;
-
-	struct wlr_surface *_surface = wlr_layer_surface_v1_surface_at(layer_view->layer_surface,
-																view_sx, view_sy, &_sx, &_sy);
-	if (_surface != NULL) {
-		*sx = _sx;
-		*sy = _sy;
-		*surface = _surface;
-		return true;
-	}
-
-	return false;
-}
-
-static bool view_at(struct woodland_view *view, double lx, double ly, struct wlr_surface **surface,
-																		double *sx, double *sy) {
-	/*
-	 * XDG toplevels may have nested surfaces, such as popup windows for context
-	 * menus or tooltips. This function tests if any of those are underneath the
-	 * coordinates lx and ly (in output Layout Coordinates). If so, it sets the
-	 * surface pointer to that wlr_surface and the sx and sy coordinates to the
-	 * coordinates relative to that surface's top-left corner.
-	 */
-	double _sx;
-	double _sy;
-	double view_sx = lx - view->x;
-	double view_sy = ly - view->y;
-	struct wlr_surface *_surface = NULL;
-	_surface = wlr_xdg_surface_surface_at(view->xdg_surface,
-										  view_sx,
-										  view_sy,
-										  &_sx,
-										  &_sy);
-	if (_surface != NULL) {
-		*sx = _sx;
-		*sy = _sy;
-		*surface = _surface;
-		return true;
-	}
-	return false;
-}
-
-static struct woodland_view *desktop_view_at(struct woodland_server *server, double lx, double ly,
-										struct wlr_surface **surface, double *sx, double *sy) {
-	/* This iterates over all of our surfaces and attempts to find one under the
-	 * cursor. This relies on server->views being ordered from top-to-bottom.
-	 * If we have any layer shell applicaiton then we need to make sure it is
-	 * always rendered above other toplevels and not only its buffer but its
-	 * wlr_surface too.
-	 */
-	// First, check if at this coordinates underneath other toplevels there is any layer surface
-    struct woodland_layer_view *layer_view;
-    wl_list_for_each(layer_view, &server->layer_surfaces, link) {
-        if (view_layer_at(layer_view, lx, ly, surface, sx, sy)) {
-			/// If any layer surface found underneath any XDG toplevels then do nothing
-			wlr_xcursor_manager_set_cursor_image(layer_view->server->cursor_mgr,
-												 "left_ptr",
-												 layer_view->server->cursor);
-			server->layer_view_found = true;
-        	return NULL;
-        }
-    }
-	struct woodland_view *view;
-	wl_list_for_each(view, &server->views, link) {
-		if (view_at(view, lx, ly, surface, sx, sy)) {
-			/* Sets explicit cursor theme instead of default xcursor theme
-			 * because default xcursor theme doesn't scale well
-			 * but only if no constraints are applied,
-			 * if not checking for constrains then it won't hide pointer in games.
-			 */
-			if (!view->server->active_pointer_constraint) {
-            	wlr_xcursor_manager_set_cursor_image(view->server->cursor_mgr,
-            										 "left_ptr",
-            										 view->server->cursor);
-            }
-			return view;
+static struct woodland_view *get_toplevel_for_surface(struct woodland_server *server,
+														struct wlr_surface *surface) {
+	struct woodland_view *toplevel;
+	wl_list_for_each(toplevel, &server->toplevels, link) {
+		if (toplevel->xdg_toplevel->base->surface == surface) {
+			return toplevel;
 		}
 	}
 	return NULL;
 }
 
-static void process_cursor_move(struct woodland_server *server, uint32_t time) {
-	(void)time;
-	if ((!server) || (server == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'server' is NULL in 'process_cursor_move'!");
-		return;
+static struct woodland_view *desktop_toplevel_at(struct woodland_server *server,
+																		double lx,
+																		double ly,
+																		struct wlr_surface **surface,
+																		double *sx,
+																		double *sy) {
+	/* This returns the topmost node in the scene at the given layout coords.
+	 * We only care about surface nodes as we are specifically looking for a
+	 * surface in the surface tree of a woodland_view. */
+	struct wlr_scene_node *node = wlr_scene_node_at(&server->scene->tree.node, lx, ly, sx, sy);
+	if (node == NULL || node->type != WLR_SCENE_NODE_BUFFER) {
+		return NULL;
 	}
-	/* Move the grabbed view to the new position. */
-	server->grabbed_view->x = ((server->cursor->x + server->pan_offset_x) / \
-										server->zoom_factor) - server->grab_x;
-	server->grabbed_view->y = ((server->cursor->y + server->pan_offset_y) / \
-										server->zoom_factor) - server->grab_y;
+	struct wlr_scene_buffer *scene_buffer = wlr_scene_buffer_from_node(node);
+	struct wlr_scene_surface *scene_surface = wlr_scene_surface_try_from_buffer(scene_buffer);
+	if (!scene_surface) {
+		return NULL;
+	}
+
+	*surface = scene_surface->surface;
+	/* Find the node corresponding to the woodland_view at the root of this
+	 * surface tree, it is the only one for which we set the data field. */
+	struct wlr_scene_tree *tree = node->parent;
+	while (tree != NULL && tree->node.data == NULL) {
+		tree = tree->node.parent;
+	}
+	return tree->node.data;
 }
 
-static void process_cursor_resize(struct woodland_server *server, uint32_t time) {
-	(void)time;
-	/* Resizing the grabbed view can be a little bit complicated, because we
-	 * could be resizing from any corner or edge. This not only resizes the view
-	 * on one or two axes, but can also move the view if you resize from the top
-	 * or left edges (or top-left corner).
-	 *
-	 * Note the original author took some shortcuts here. In a more fleshed-out compositor,
-	 * you'd wait for the client to prepare a buffer at the new size, then
-	 * commit any movement that was prepared.
-	 */
-	if (!server) {
-		wlr_log(WLR_ERROR, "Error: 'server' is NULL in 'process_cursor_resize'!");
+static void process_cursor_move(struct woodland_server *server) {
+	struct woodland_view *toplevel = server->grabbed_toplevel;
+	double base_dx = server->cursor->x - server->grab_x;
+	double base_dy = server->cursor->y - server->grab_y;
+	// Move a single window
+	wlr_scene_node_set_position(&toplevel->scene_tree->node, base_dx, base_dy);
+}
+
+static void process_cursor_resize(struct woodland_server *server) {
+	struct woodland_view *toplevel = server->grabbed_toplevel;
+	if (!toplevel) {
 		return;
 	}
-	struct woodland_view *view = server->grabbed_view;
-	if (!view) {
-		wlr_log(WLR_ERROR, "Error: 'view' is NULL in 'process_cursor_resize'!");
-		return;
+	if (server->cursor_mode == WOODLAND_CURSOR_RESIZE) {
+		wlr_xdg_toplevel_set_resizing(toplevel->xdg_toplevel, true);
 	}
-	double border_x = ((server->cursor->x + server->pan_offset_x) / \
-									server->zoom_factor) - server->grab_x;
-	double border_y = ((server->cursor->y + server->pan_offset_y) / \
-									server->zoom_factor) - server->grab_y;
-	int new_left = server->grab_geobox.x;
-	int new_right = server->grab_geobox.x + server->grab_geobox.width;
-	int new_top = server->grab_geobox.y;
-	int new_bottom = server->grab_geobox.y + server->grab_geobox.height;
+	else {
+		wlr_xdg_toplevel_set_resizing(toplevel->xdg_toplevel, false);
+	}
+	double border_x = server->cursor->x - server->grab_x;
+	double border_y = server->cursor->y - server->grab_y;
+	
+	// Calculate group-aware resize parameters
+	struct wlr_box group_geo;
+	group_geo = server->grab_geobox;
+
+	// Calculate resize deltas based on group geometry
+	int new_left = group_geo.x;
+	int new_right = group_geo.x + group_geo.width;
+	int new_top = group_geo.y;
+	int new_bottom = group_geo.y + group_geo.height;
 
 	if (server->resize_edges & WLR_EDGE_TOP) {
 		new_top = border_y;
-		if (new_top >= new_bottom) {
-			new_top = new_bottom - 1;
-		}
+		if (new_top >= new_bottom) new_top = new_bottom - 1;
 	}
-	else if (server->resize_edges & WLR_EDGE_BOTTOM) {
+	if (server->resize_edges & WLR_EDGE_BOTTOM) {
 		new_bottom = border_y;
-		if (new_bottom <= new_top) {
-			new_bottom = new_top + 1;
-		}
+		if (new_bottom <= new_top) new_bottom = new_top + 1;
 	}
 	if (server->resize_edges & WLR_EDGE_LEFT) {
 		new_left = border_x;
-		if (new_left >= new_right) {
-			new_left = new_right - 1;
-		}
+		if (new_left >= new_right) new_left = new_right - 1;
 	}
-	else if (server->resize_edges & WLR_EDGE_RIGHT) {
+	if (server->resize_edges & WLR_EDGE_RIGHT) {
 		new_right = border_x;
-		if (new_right <= new_left) {
-			new_right = new_left + 1;
-		}
+		if (new_right <= new_left) new_right = new_left + 1;
 	}
-	struct wlr_box geo_box;
-	wlr_xdg_surface_get_geometry(view->xdg_surface, &geo_box);
-	view->x = new_left - geo_box.x;
-	view->y = new_top - geo_box.y;
-	int new_width = new_right - new_left;
-	int new_height = new_bottom - new_top;
-	wlr_xdg_toplevel_set_size(view->xdg_surface, new_width, new_height);
+
+	// Existing single window resize logic
+	wlr_scene_node_set_position(&toplevel->scene_tree->node,
+								 new_left - toplevel->xdg_toplevel->base->current.geometry.x,
+								 new_top - toplevel->xdg_toplevel->base->current.geometry.y);
+
+	wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, new_right - new_left, new_bottom - new_top);
 }
 
 static void process_cursor_motion(struct woodland_server *server, uint32_t time) {
-	// If the cursor mode is set to move, process the cursor move and return.
+	/* Handle interactive modes first */
 	if (server->cursor_mode == WOODLAND_CURSOR_MOVE) {
-		process_cursor_move(server, time);
+		process_cursor_move(server);
 		return;
 	}
-	// If the cursor mode is set to resize, process the cursor resize and return.
 	else if (server->cursor_mode == WOODLAND_CURSOR_RESIZE) {
-		process_cursor_resize(server, time);
+		process_cursor_resize(server);
 		return;
 	}
-	// Pointer to the surface under the cursor
-	struct wlr_surface *surface = NULL;
-	double cursor_x;
-	double cursor_y;
-	
-	// The check 'server->zoom_factor > 1.0' represents the state of zoom
-	// if 'server->zoom_factor > 1.0' is 1.0 then no zooming is applied
-	// if the value is greater than 1.0 then the user is currently zooming in or out
-	if (server->zoom_factor > 1.0) {
-		// Adjust cursor coordinates by the scaling factor and pan offset
-		cursor_x = (server->cursor->x + server->pan_offset_x) / server->zoom_factor;
-		cursor_y = (server->cursor->y + server->pan_offset_y) / server->zoom_factor;
-	}
-	else {
-		cursor_x = server->cursor->x;
-		cursor_y = server->cursor->y;
-	}
-	// Debugging: Log the cursor coordinates
-	///fprintf(stderr, "Cursor coordinates: (%.2f, %.2f)\n", server->cursor->x,
-	///server->cursor->y);
-	///fprintf(stderr, "Adjusted cursor coordinates: (%.2f, %.2f)\n", cursor_x, cursor_y);
 
-	// Variables for storing surface-local coordinates
 	double sx;
 	double sy;
-	// Try to find a regular view under the cursor
-	struct woodland_view *view = desktop_view_at(server, cursor_x, cursor_y, &surface, &sx, &sy);
-	if (!view && !server->layer_view_found) {
-		// No surface found, log an error and reset layer view flag
-		server->layer_view_found = false;
+	struct wlr_seat *seat = server->seat;
+	struct wlr_surface *surface = NULL;
+
+	struct woodland_view *toplevel = desktop_toplevel_at(server,
+														server->cursor->x,
+														server->cursor->y,
+														&surface,
+														&sx,
+														&sy);
+
+	if (!toplevel) {
+		/* Clear foreign toplevel focus when not over any window */
+		wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
+		if (seat->keyboard_state.focused_surface) {
+			struct woodland_view *focused_toplevel = get_toplevel_for_surface(server,
+												seat->keyboard_state.focused_surface);
+			if (focused_toplevel && focused_toplevel->foreign_handle) {
+				wlr_foreign_toplevel_handle_v1_set_activated(focused_toplevel->foreign_handle, false);
+			}
+		}
 	}
-	else if (server->layer_view_found) {
-		server->layer_view_found = false;
+	if (surface) {
+		wlr_seat_pointer_notify_enter(seat, surface, sx, sy);
+		wlr_seat_pointer_notify_motion(seat, time, sx, sy);
 	}
 	else {
-		view_at(view, cursor_x, cursor_y, &surface, &sx, &sy);
+		wlr_seat_pointer_clear_focus(seat);
+	}
+}
+
+ /**
+ * This event is forwarded by the cursor when a pointer emits a _relative_
+ * pointer motion event (i.e. a delta) 
+ *
+ * The cursor doesn't move unless we tell it to. The cursor automatically
+ * handles constraining the motion to the output layout, as well as any
+ * special configuration applied for the specific input device which
+ * generated the event. You can pass NULL for the device if you want to move
+ * the cursor around without any input.
+ */
+static void server_cursor_motion(struct wl_listener *listener, void *data) {
+	// Safety check for event listener and data
+	if (!listener || !data) {
+		fprintf(stderr, "server_cursor_motion: NULL listener or data\n");
+		return;
 	}
 
-	// Get the seat (input device)
-	struct wlr_seat *seat = server->seat;
-	// Get the surface under the cursor from the previous motion
-	struct wlr_surface *focused_surface = seat->pointer_state.focused_surface;
+	// Get a pointer to the main server structure from the listener
+	struct woodland_server *server = wl_container_of(listener, server, cursor_motion);
+	if (!server || !server->cursor || !server->output_layout || !server->scene) {
+		fprintf(stderr, "server_cursor_motion: server or critical members uninitialized\n");
+		return;
+	}
 
-	// If a surface (either regular or layer) is found under the cursor
-	if (surface) {
-		// If the surface under the cursor has changed
-		if (surface != focused_surface) {
-			// Notify the seat of the pointer entering the new surface
-			wlr_seat_pointer_notify_enter(seat, surface, sx, sy); // use unscaled sx, sy
+	// Cast the void pointer to a pointer motion event
+	struct wlr_pointer_motion_event *event = data;
+	if (!event || !event->pointer) {
+		fprintf(stderr, "server_cursor_motion: NULL event or event->pointer\n");
+		return;
+	}
+
+	// Find the output under the current cursor position
+	struct wlr_output *output = wlr_output_layout_output_at(server->output_layout,
+											server->cursor->x, server->cursor->y);
+	if (!output) {
+		fprintf(stderr, "server_cursor_motion: No output under cursor\n");
+		return;
+	}
+
+	// Get the root scene tree node for panning/zooming
+	struct wlr_scene_tree *pan_zoom_root = wlr_scene_tree_from_node(&server->scene->tree.node);
+	if (!pan_zoom_root) {
+		fprintf(stderr, "server_cursor_motion: Failed to get scene tree from root node\n");
+		return;
+	}
+	int output_width = server->transformed_width;
+	int output_height = server->transformed_height;
+
+	// Define margins for when panning should start
+	double left_threshold = 10;
+	double top_threshold = 10;
+	double right_threshold = (output_width / server->zoom_factor) - 10;
+	double bottom_threshold = (output_height / server->zoom_factor) - 10;
+
+	// Calculate the full content size with zoom applied
+	int32_t zoomed_width = (int32_t)(output_width * server->zoom_factor);
+	int32_t zoomed_height = (int32_t)(output_height * server->zoom_factor);
+
+	// Keep track of panning offsets (shared static for simplicity)
+	static double pan_x = 0;
+	static double pan_y = 0;
+
+	if (server->zoom_factor > 1.0) {
+		// Cursor is near the edges — initiate panning
+		if (server->cursor->x < left_threshold ||
+			server->cursor->x > right_threshold ||
+			server->cursor->y < top_threshold ||
+			server->cursor->y > bottom_threshold) {
+
+			// Compute the desired pan target based on cursor position
+			double pan_x_target = (server->cursor->x / (double)output_width) *
+												(zoomed_width - output_width);
+			double pan_y_target = (server->cursor->y / (double)output_height) *
+												(zoomed_height - output_height);
+
+			// Smoothly move pan position toward the target using zoom_speed
+			pan_x += (pan_x_target - pan_x) * server->zoom_speed_m;
+			pan_y += (pan_y_target - pan_y) * server->zoom_speed_m;
+
+			// Clamp pan to avoid showing outside the zoomed area
+			if (pan_x < 0) {
+				pan_x = 0;
+			}
+			if (pan_y < 0) {
+				pan_y = 0;
+			}
+			if (pan_x > zoomed_width - output_width) {
+				pan_x = zoomed_width - output_width;
+			}
+			if (pan_y > zoomed_height - output_height) {
+				pan_y = zoomed_height - output_height;
+			}
+			// Apply the pan offset by shifting the scene node
+			wlr_scene_node_set_position(&pan_zoom_root->node, -pan_x, -pan_y);
+		}
+	}
+	else {
+		// Reset pan offsets when zoom factor is 1.0
+		pan_x = 0;
+		pan_y = 0;
+		wlr_scene_node_set_position(&pan_zoom_root->node, 0, 0);
+	}
+
+	// Show/hide panel
+	double nx = 0;
+	double ny = 0;
+
+	// Get the buffer local coordinates
+	struct wlr_scene_node *node = wlr_scene_node_at(&server->scene->tree.node,
+													server->cursor->x,
+													server->cursor->y,
+													&nx,
+													&ny);
+
+	struct wlr_box output_box;
+	wlr_output_layout_get_box(server->output_layout, output, &output_box);
+
+	// Static flags to track previous hover state
+	static bool cursor_in_panel_region = false;
+	static bool cursor_in_volume_region = false;
+	static bool cursor_in_brightness_region = false;
+	static bool cursor_in_time_region = false;
+	static bool cursor_in_network_region = false;
+	static bool cursor_in_menu_list_region = false;
+	static bool cursor_in_window_list_region = false;
+	static bool cursor_in_network_applet_region = false;
+
+	bool in_panel_region = server->cursor->x > output_box.width - PPANEL_WIDTH &&
+												server->cursor->y >= (output_box.height - 7);
+
+	if (in_panel_region && !cursor_in_panel_region) {
+		///fprintf(stderr, "Show panel\n");
+		if (!server->time_update_timer) {
+			server->time_update_timer = wl_event_loop_add_timer(server->event_loop, update_time, server);
+			wl_event_source_timer_update(server->time_update_timer, 1000);
 		}
 		else {
-			// Notify the seat of the pointer motion within the same surface
-			wlr_seat_pointer_notify_motion(seat, time, sx, sy); // use unscaled sx, sy
+			wl_event_source_timer_update(server->time_update_timer, 1000);
+		}
+		server->panel_is_hidden = false;
+	}
+	else if ((server->cursor->x < (output_box.width - PPANEL_WIDTH) &&
+		!server->time_is_clicked && !server->network_is_clicked) ||
+		(server->cursor->y < (output_box.height - 45) &&
+		!server->time_is_clicked &&
+		!server->network_is_clicked)) {
+
+		if (!server->panel_is_hidden) {
+			///fprintf(stderr, "Hide panel\n");
+			server->panel_is_hidden = true;
+			server->volume_change = false;
+			server->brightness_change = false;
+			server->time_hovered = false;
+			server->time_is_clicked = false;
+			server->network_hovered = false;
+			server->network_ly_hovered = false;
+			server->network_is_clicked = false;
+			if (server->time_update_timer && server->panel_buffer) {
+				wlr_scene_node_set_enabled(&server->panel_buffer->node, false);
+				wl_event_source_remove(server->time_update_timer);
+				server->time_update_timer = NULL;
+			}
 		}
 	}
-	else {
-		// If no surface is under the cursor, clear the pointer focus if necessary
-		if (focused_surface) {
-			wlr_seat_pointer_clear_focus(seat);
+	cursor_in_panel_region = in_panel_region;
+
+	// Activate panel widgets on mouse hover
+	if (node->data) {
+		const char *retrieved = (const char *)node->data;
+
+		// Check if the mouse cursor is hovering over the panel title
+		if (strcmp(retrieved, "woodland_panel") == 0) {
+			///fprintf(stderr, "server->scene->tree.node.data: %s\n", retrieved);
+			///fprintf(stderr, "nx: %d\n", (int)nx);
+			///fprintf(stderr, "ny: %d\n", (int)ny);
+
+			// Volume change
+			bool in_volume_region = !server->panel_is_hidden && (int)nx > 185 && (int)ny > 3;
+			if (in_volume_region) {
+				///fprintf(stderr, "Volume change hover\n");
+				server->volume_change = true;
+				cursor_in_volume_region = false;
+			}
+			else if (!in_volume_region && !cursor_in_volume_region) {
+				///fprintf(stderr, "Volume change leave\n");
+				server->volume_change = false;
+				cursor_in_volume_region = true;
+			}
+			cursor_in_volume_region = in_volume_region;
+
+			// Brightness change
+			bool in_brightness_region = !server->panel_is_hidden && nx > 145 && nx < 185;
+			if (in_brightness_region && !cursor_in_brightness_region) {
+				///fprintf(stderr, "Brightness change hover\n");
+				server->brightness_change = true;
+			}
+			else if (!in_brightness_region && cursor_in_brightness_region) {
+				///fprintf(stderr, "Brightness change leave\n");
+				server->brightness_change = false;
+			}
+			cursor_in_brightness_region = in_brightness_region;
+
+			// Time hovered
+			bool in_time_region = !server->panel_is_hidden && nx > 60 && nx < 138;
+			if (in_time_region && !cursor_in_time_region) {
+				///fprintf(stderr, "Time hovered\n");
+				server->time_hovered = true;
+			}
+			else if (!in_time_region && cursor_in_time_region) {
+				///fprintf(stderr, "Time leave\n");
+				server->time_hovered = false;
+			}
+			cursor_in_time_region = in_time_region;
+
+			// Network hovered
+			bool in_network_region = !server->panel_is_hidden && nx >= 7 && nx < 50;
+			if (in_network_region && !cursor_in_network_region) {
+				///fprintf(stderr, "Network hovered\n");
+				server->network_hovered = true;
+			}
+			else if (!in_network_region && cursor_in_network_region) {
+				///fprintf(stderr, "Network leave\n");
+				server->network_hovered = false;
+			}
+			cursor_in_network_region = in_network_region;
 		}
-	}
-	// Send the mouse activity event to idle manager
-	if (server->idle_enabled && server->idle && server->seat) {
-		wlr_idle_notify_activity(server->idle, server->seat);
-	}
-	else {
-		wlr_log(WLR_ERROR, "Error: 'idle' is NULL in 'process_cursor_motion'");
-	}
-}
+		bool in_network_applet_region = !server->panel_is_hidden &&
+										strcmp(retrieved, "woodland_network_applet") == 0 &&
+										nx >= 3 &&
+										ny < (PNETWORK_HEIGHT - 3);
+		if (in_network_applet_region) {
+			// Inside network applet
+			////fprintf(stderr, "Entered the network applet dialog region\n");
+			server->network_ly_hovered = true;
 
-static void apply_constraint(struct woodland_server *server,
-							 struct wlr_input_device *device,
-							 struct woodland_view *focused_view,
-							 double *x,
-							 double *y) {
-	if (!server->active_pointer_constraint || device->type != WLR_INPUT_DEVICE_POINTER) {
-		return;
-	}
-
-	if (server->active_pointer_constraint->current.committed == \
-					WLR_POINTER_CONSTRAINT_V1_STATE_REGION) {
-		double sx = server->cursor->x;
-		double sy = server->cursor->y;
-
-		sx -= focused_view->x;
-		sy -= focused_view->y;
-
-		double sx_confined;
-		double sy_confined;
-		if (!wlr_region_confine(&server->active_pointer_constraint->region,
-								sx,
-								sy,
-								sx + *x,
-								sy + *y,
-								&sx_confined,
-								&sy_confined)) {
-			return;
+			// SsidPosition converts the current mouse cursor to the network ssid name in the list
+			server->SsidPosition = (int)ny / 26;
+			///fprintf(stderr, "the position of item: %d\n", server->SsidPosition);
 		}
+		else if (!in_network_applet_region && cursor_in_network_applet_region) {
 
-		*x = sx_confined - sx;
-		*y = sy_confined - sy;
-	}
-}
+			///fprintf(stderr, "Left the network applet dialog region\n");
+			server->network_ly_hovered = false;
+		}
+		cursor_in_network_applet_region = in_network_applet_region;
 
-static void server_cursor_motion(struct wl_listener *listener, void *data) {
-	/* This event is forwarded by the cursor when a pointer emits a _relative_
-	 * pointer motion event (i.e., a delta) */
-	struct wlr_event_pointer_motion *event = data;
-	if ((!event) || (event == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'event' is NULL in 'server_cursor_motion'!");
-		return;
+		// Hovering over the titles in the windowlist dialog.
+		bool in_windowlist_region = strcmp(retrieved, "woodland_windowlist") == 0 &&
+											server->titles_clicked &&
+											nx >= 3 &&
+											ny < (server->titles_dialog_size - 3);;
+		if (in_windowlist_region) {
+			///fprintf(stderr, "in_windowlist_region\n");
+			int relative_y = ny - 3; // Adjust for top margin
+			int row = relative_y / 40;
+			server->TitlesPosition = row;
+
+			if (row >= 0 && row < server->titles_counter) {
+				server->TitlesPosition = row;
+			}
+			else {
+				server->TitlesPosition = -1;
+			}
+
+			if (server->titles_scene_buffer) {
+				wlr_scene_node_destroy(&server->titles_scene_buffer->node);
+				server->titles_scene_buffer = NULL;
+			}
+			list_titles(server);
+			
+			server->titles_ly_hovered = true;
+			cursor_in_window_list_region = true;
+			///fprintf(stderr, "server->TitlesPosition: %d\n", (int)server->TitlesPosition);
+		}
+		else if (!in_windowlist_region && cursor_in_window_list_region) {
+			///fprintf(stderr, "Left the window list region\n");
+			server->titles_ly_hovered = false;
+			cursor_in_window_list_region = false;
+		}
+		cursor_in_window_list_region = in_windowlist_region;
+
+		// Hovering over the titles in the menu dialog.
+		bool in_menu_region = strcmp(retrieved, "woodland_menu") == 0 &&
+											server->menu_clicked &&
+											nx >= 3 &&
+											nx <= 197 &&
+											ny > 3 &&
+											ny < (server->menu_dialog_size - 3);
+		if (in_menu_region) {
+			///fprintf(stderr, "in_menu_region\n");
+			int relative_y = ny - 3; // Adjust for top margin
+			int row = relative_y / 40;
+			server->menuPosition = row;
+
+			if (server->menu_scene_buffer) {
+				wlr_scene_node_destroy(&server->menu_scene_buffer->node);
+				server->menu_scene_buffer = NULL;
+			}
+			show_menu(server);
+			
+			server->menu_ly_hovered = true;
+			cursor_in_menu_list_region = true;
+		}
+		else if (!in_menu_region && cursor_in_menu_list_region) {
+			///fprintf(stderr, "Left the menu list region\n");
+			server->menu_ly_hovered = false;
+			cursor_in_menu_list_region = false;
+		}
+		cursor_in_menu_list_region = in_menu_region;
 	}
-	struct woodland_server *server = wl_container_of(listener, server, cursor_motion);
-	if ((!server) || (server == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'server' is NULL in 'server_cursor_motion'!");
-		return;
-	}
-	// Get current view
-	struct woodland_view *current_view = wl_container_of(server->views.next,
-																 current_view,
-																 link);
+
+	wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x, event->delta_y);
 	// Sends relative motion used mostly in games for 360-degree mouse view
 	wlr_relative_pointer_manager_v1_send_relative_motion(server->wlr_relative_pointer_manager,
 														server->seat,
@@ -1618,590 +1519,566 @@ static void server_cursor_motion(struct wl_listener *listener, void *data) {
 														event->delta_y,
 														event->unaccel_dx,
 														event->unaccel_dy);
-
-	// Apply constraints to keep mouse inside given box (e.g. in games)
-	apply_constraint(server, event->device, current_view, &event->delta_x, &event->delta_y);
-
-	/* The cursor doesn't move unless we tell it to. The cursor automatically
-	 * handles constraining the motion to the output layout, as well as any
-	 * special configuration applied for the specific input device which
-	 * generated the event. You can pass NULL for the device if you want to move
-	 * the cursor around without any input. */
-	wlr_cursor_move(server->cursor, event->device, event->delta_x, event->delta_y);
-
-	// Process cursor motion (e.g., for updating focus, triggering actions, etc.)
+	// Handle focus changes and client-side pointer motion notification
 	process_cursor_motion(server, event->time_msec);
+}
 
-	// Update pan offset based on the current cursor position
+/* This function is a workaround for GTK apps to stop them from auto-resizing when scaling/zooming */
+static void keep_scaling_factor(struct woodland_server *server) {
+	struct woodland_view *iter;
+	wl_list_for_each_reverse(iter, &server->toplevels, link) {
+		wlr_xdg_toplevel_set_resizing(iter->xdg_toplevel, true);
+	}
+	return;
+}
+
+static void server_cursor_axis(struct wl_listener *listener, void *data) {
+	// Safety checks
+	if (!listener || !data) {
+		fprintf(stderr, "server_cursor_axis: NULL listener or data\n");
+		return;
+	}
+
+	struct woodland_server *server = wl_container_of(listener, server, cursor_axis);
+	if (!server || !server->cursor || !server->output_layout || !server->scene || !server->seat) {
+		fprintf(stderr, "server_cursor_axis: server or critical fields uninitialized\n");
+		return;
+	}
+
+	struct wlr_pointer_axis_event *event = data;
+	if (!event) {
+		fprintf(stderr, "server_cursor_axis: NULL axis event\n");
+		return;
+	}
+
+	// Determine the output under the cursor
 	struct wlr_output *output = wlr_output_layout_output_at(server->output_layout,
 															server->cursor->x,
 															server->cursor->y);
-	if ((!output) || (output == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'output' is NULL in 'server_cursor_motion'.");
-		return;
-	}
-	update_pan_offset(server, server->cursor->x, server->cursor->y, output->width, output->height);
-}
-
-static void server_cursor_motion_absolute(struct wl_listener *listener, void *data) {
-    struct wlr_event_pointer_motion_absolute *event = data;
-	if ((!event) || (event == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'event' is NULL in 'server_cursor_motion_absolute'!");
-		return;
-	}
-    struct woodland_server *server = wl_container_of(listener, server, cursor_motion_absolute);
-	if ((!server) || (server == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'server' is NULL in 'server_cursor_motion_absolute'!");
-		return;
-	}
-	wlr_cursor_warp_absolute(server->cursor, event->device, event->x, event->y);
-	process_cursor_motion(server, event->time_msec);
-}
-
-/* Pointer constraints */
-static void handle_pointer_constraint_destroy(struct wl_listener *listener, void *data) {
-	struct woodland_server *server = wl_container_of(listener, server, constraint_destroy);
-	struct wlr_pointer_constraint_v1 *constraint = data;
-
-	// Deactivate the constraint
-	wlr_pointer_constraint_v1_send_deactivated(constraint);
-
-	// Clean up
-	server->active_pointer_constraint = NULL;
-}
-
-static void handle_new_pointer_constraint(struct wl_listener *listener, void *data) {
-	struct woodland_server *server = wl_container_of(listener, server, new_pointer_constraint);
-	struct wlr_pointer_constraint_v1 *constraint = data;
-
-	// You might want to store the constraint in your server struct or elsewhere
-	server->active_pointer_constraint = constraint;
-
-	// Activate the constraint
-	wlr_pointer_constraint_v1_send_activated(constraint);
-
-	// Set up listener for constraint destruction
-	wl_signal_add(&constraint->events.destroy, &server->constraint_destroy);
-	server->constraint_destroy.notify = handle_pointer_constraint_destroy;
-}
-
-static void server_cursor_button(struct wl_listener *listener, void *data) {
-	double sx;
-	double sy;
-	struct wlr_surface *surface = NULL;
-	struct wlr_event_pointer_button *event = data;
-	if (!event) {
-		wlr_log(WLR_ERROR, "Error: 'event' is NULL in 'server_cursor_button'!");
-		return;
-	}
-	struct woodland_server *server = wl_container_of(listener, server, cursor_button);
-	if (!server) {
-		wlr_log(WLR_ERROR, "Error: 'server' is NULL in 'server_cursor_button'!");
+	if (!output) {
+		fprintf(stderr, "server_cursor_axis: No output under cursor\n");
 		return;
 	}
 
-	// Adjust cursor coordinates by the scaling factor
-	double cursor_x = (server->cursor->x + server->pan_offset_x) / server->zoom_factor;
-	double cursor_y = (server->cursor->y + server->pan_offset_y) / server->zoom_factor;
-
-	// Notify the seat of the button event
-	wlr_seat_pointer_notify_button(server->seat, event->time_msec, event->button, event->state);
-
-	if (event->state == WLR_BUTTON_RELEASED) {
-		// Reset cursor mode and grabbed view on button release
-		server->cursor_mode = WOODLAND_CURSOR_PASSTHROUGH;
-		server->grabbed_view = NULL;
+	struct wlr_scene_tree *pan_zoom_root = wlr_scene_tree_from_node(&server->scene->tree.node);
+	if (!pan_zoom_root) {
+		fprintf(stderr, "server_cursor_axis: Failed to get scene tree from root node\n");
 		return;
 	}
 
-	// Check if any layer surface is under the cursor
-	struct woodland_layer_view *layer_view;
-	wl_list_for_each(layer_view, &server->layer_surfaces, link) {
-		if (layer_view->mapped) {
-			surface = wlr_layer_surface_v1_surface_at(layer_view->layer_surface,
-													  cursor_x,
-													  cursor_y,
-													  &sx,
-													  &sy);
-			if (surface) {
+	struct wlr_output_state state;
+	wlr_output_state_init(&state);
+
+	/* This event is forwarded by the cursor when a pointer emits an axis event,
+	 * for example when you move the scroll wheel. */
+
+	double delta = event->delta;
+	double ZoomFactor = 0;
+	static double MouseZoomFactor = 0.2;
+	static double TouchpadZoomFactor = 0.01;
+
+	// Adjust delta based on input source (mouse wheel vs touchpad)
+	if (event->source == WL_POINTER_AXIS_SOURCE_FINGER) {
+		// Scale the delta for touchpad events
+		delta *= TOUCHPAD_SCROLL_SCALE;
+		ZoomFactor = TouchpadZoomFactor;
+		server->zoom_speed_m = server->zoom_speed + 0.02;
+	}
+	else {
+		// Scale the delta for mouse wheel events
+		delta *= MOUSE_SCROLL_SCALE;
+		ZoomFactor = MouseZoomFactor;
+		server->zoom_speed_m = server->zoom_speed;
+	}
+
+	//------- Filtering out small scroll values -----//
+	// Define a variable to hold the threshold value
+	static double scroll_debounce_threshold = SCROLL_DEBOUNCE_THRESHOLD;
+
+	// Calculate the average scroll value over a certain period
+	static double sum_delta = 0;
+	static int num_samples = 0;
+	const int max_samples = 10;
+
+	sum_delta += delta;
+	num_samples++;
+
+	if (num_samples >= max_samples) {
+		double avg_delta = sum_delta / num_samples;
+		scroll_debounce_threshold = avg_delta * 0.3; // Adjust the threshold based on average scroll value
+		sum_delta = 0;
+		num_samples = 0;
+	}
+
+	// Use the variable in your code
+	if (fabs(delta) < scroll_debounce_threshold) {
+		return;
+	}
+
+	struct wlr_box output_box;
+	wlr_output_layout_get_box(server->output_layout, output, &output_box);
+
+	// Panel actions
+	if (!server->panel_is_hidden) {
+		switch (event->orientation) {
+		case WL_POINTER_AXIS_HORIZONTAL_SCROLL:
+		case WL_POINTER_AXIS_VERTICAL_SCROLL:
+			if (delta > 0) {
+				///fprintf(stderr, "Mouse wheel down\n");
+				if (server->volume_change) {
+					run_cmd(server->volume_down);
+					return;
+					break;
+				}
+				if (server->brightness_change) {
+					if (server->brightness_path) {
+						server->saved_brightness = get_current_brightness(server->brightness_path);
+						set_brightness(server->saved_brightness - 3, server->brightness_path);
+					}
+					return;
+					break;
+				}
+			}
+			else {
+				///fprintf(stderr, "Mouse wheel up\n");
+				if (server->volume_change) {
+					run_cmd(server->volume_up);
+					return;
+					break;
+				}
+				if (server->brightness_change) {
+					if (server->brightness_path) {
+						server->saved_brightness = get_current_brightness(server->brightness_path);
+						set_brightness(server->saved_brightness + 3, server->brightness_path);
+					}
+					return;
+					break;
+				}
+			}
+		}
+	}
+	// Cycle windows on scrolling the top left corner
+	if (server->cursor->x > (output_box.width - 10) && server->cursor->y <
+								(output_box.height - output_box.height + 10)) {
+		switch (event->orientation) {
+		case WL_POINTER_AXIS_HORIZONTAL_SCROLL:
+		case WL_POINTER_AXIS_VERTICAL_SCROLL:
+			if (delta > 0) {
+				///fprintf(stderr, "Mouse wheel down\n");
+				cycle_windows(server);
+				return;
+				break;
+			}
+			else {
+				///fprintf(stderr, "Mouse wheel up\n");
+				cycle_windows_reverse(server);
+				return;
 				break;
 			}
 		}
 	}
+	//------- Zooming logic -------//
+	// Zooming on scrolling on the left-top corner of the screen or Super key + mouse scroll
+	if ((server->cursor->x < 5 && server->cursor->y < 5) || server->super_key_down) {
+		switch (event->orientation) {
+			case WL_POINTER_AXIS_VERTICAL_SCROLL:
+			if (delta > 0) {
+				///fprintf(stderr, "Mouse wheel down\n");
+				// Reset scaling factor
+				if ((server->zoom_factor) == 1.0) {
+					keep_scaling_factor(server);
+					return;
+				}
+				else if ((server->zoom_factor - 0.7) < 1.0) {
+					// Set default zoom level, reset
+					server->zoom_factor = 1.0;
+					wlr_output_state_set_scale(&state, 1.0);
+					if (!wlr_output_commit_state(output, &state)) {
+						fprintf(stderr, "Zoom out: failed to commit output state\n");
+					}
+					keep_scaling_factor(server);
+					wlr_output_state_finish(&state);
+					// Reset position if zoom was off
+					wlr_scene_node_set_position(&pan_zoom_root->node, 0, 0);
+					return;
+				}
 
-	// If a surface is found under the cursor, focus it and return
-	if (surface) {
+				if (server->zoom_factor > 1.0) {
+					// Zoom out by reducing the factor slightly
+					server->zoom_factor = server->zoom_factor - ZoomFactor;
+
+					wlr_output_state_set_scale(&state, server->zoom_factor);
+					if (!wlr_output_commit_state(output, &state)) {
+						fprintf(stderr, "Zoom out: failed to commit output state\n");
+					}
+					keep_scaling_factor(server);
+					wlr_output_state_finish(&state);
+					wlr_scene_node_set_position(&pan_zoom_root->node, 0, 0);
+					return;
+				}
+			}
+			else {
+				///fprintf(stderr, "Mouse wheel up\n");
+				// Zoom in by increasing zoom factor slightly
+				server->zoom_factor = server->zoom_factor + ZoomFactor;
+
+				if (server->zoom_factor > 10.0) {// Arbitrary upper limit
+					server->zoom_factor = 10.0;
+				}
+
+				wlr_output_state_set_scale(&state, server->zoom_factor);
+				if (!wlr_output_commit_state(output, &state)) {
+					fprintf(stderr, "Zoom in: failed to commit output state\n");
+				}
+				keep_scaling_factor(server);
+				wlr_output_state_finish(&state);
+				wlr_scene_node_set_position(&pan_zoom_root->node, 0, 0);
+				return;
+			}
+			break;
+		default:
+			keep_scaling_factor(server);
+			break;
+		}
+	}
+	// Notify the client with pointer focus of the axis event.
+	wlr_seat_pointer_notify_axis(server->seat,
+								event->time_msec,
+								event->orientation,
+								event->delta,
+								event->delta_discrete,
+								event->source,
+								event->relative_direction);
+}
+
+static void server_cursor_motion_absolute(struct wl_listener *listener, void *data) {
+	/* This event is forwarded by the cursor when a pointer emits an _absolute_
+	 * motion event, from 0..1 on each axis. This happens, for example, when
+	 * wlroots is running under a Wayland window rather than KMS+DRM, and you
+	 * move the mouse over the window. You could enter the window from any edge,
+	 * so we have to warp the mouse there. There is also some hardware which
+	 * emits these events. */
+	struct woodland_server *server = wl_container_of(listener, server, cursor_motion_absolute);
+	struct wlr_pointer_motion_absolute_event *event = data;
+	wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x, event->y);
+	process_cursor_motion(server, event->time_msec);
+}
+
+/* Reset the cursor mode to passthrough. */
+static void reset_cursor_mode(struct woodland_server *server) {
+	server->cursor_mode = WOODLAND_CURSOR_PASSTHROUGH;
+	server->grabbed_toplevel = NULL;
+}
+
+/**
+ * Handling cursor button pressing
+ */
+static void server_cursor_button(struct wl_listener *listener, void *data) {
+	// Check for NULL listener and data
+	if (!listener || !data) {
+		fprintf(stderr, "Error: NULL listener or data in server_cursor_button\n");
 		return;
 	}
 
-	// Check if a view is under the cursor
-	struct woodland_view *view = desktop_view_at(server, cursor_x, cursor_y, &surface, &sx, &sy);
-	if (view && surface) {
-		// Focus the view
-		focus_view(view, surface);
+	struct woodland_server *server = wl_container_of(listener, server, cursor_button);
+	if (!server) {
+		fprintf(stderr, "Error: Failed to get server from listener\n");
+		return;
+	}
 
+	struct wlr_pointer_button_event *event = data;
+	if (!event) {
+		fprintf(stderr, "Error: NULL event in server_cursor_button\n");
+		return;
+	}
+
+	// Notify seat about pointer button event
+	wlr_seat_pointer_notify_button(server->seat, event->time_msec, event->button, event->state);
+
+	// Check if button was released
+	if (event->state == WL_POINTER_BUTTON_STATE_RELEASED) {
+		reset_cursor_mode(server);
+		return;
+	}
+	// Resolve surface and toplevel beneath cursor
+	double sx;
+	double sy;
+	struct wlr_surface *surface = NULL;
+	struct woodland_view *toplevel = desktop_toplevel_at(server,
+														server->cursor->x,
+														server->cursor->y,
+														&surface, &sx, &sy);
+
+	// Check if surface was found
+	if (surface) {
+		// Enter surface to ensure proper pointer focus
+		wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
+	}
+	else {
+		// If no surface is found, notify seat about pointer leave
+		wlr_seat_pointer_notify_clear_focus(server->seat);
+	}
+
+	// Check if toplevel was found
+	if (toplevel) {
+		// Focus and activate toplevel
+		focus_toplevel(toplevel);
 		// If the Super key and left mouse button are both pressed, emit a move request
 		if (event->button == BTN_LEFT && server->super_key_down) {
-			wl_signal_emit(&view->xdg_surface->toplevel->events.request_move, view->xdg_surface);
+			wl_signal_emit(&toplevel->xdg_toplevel->events.request_move, toplevel->xdg_surface);
 		}
 		else {
 			server->super_key_down = false;
 		}
 	}
-}
-
-static void server_cursor_axis(struct wl_listener *listener, void *data) {
-	// Retrieve the axis event data
-	static bool zoom_on_top_edge = false;
-	struct wlr_event_pointer_axis *event = data;
-	if ((!event) || (event == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'event' is NULL in 'server_cursor_axis'!");
-		return;
-	}
-	// Retrieve the server instance from the listener
-	struct woodland_server *server = wl_container_of(listener, server, cursor_axis);
-	if ((!server) || (server == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'server' is NULL in 'server_cursor_axis'!");
-		return;
-	}
-
-	struct wlr_output *output = wlr_output_layout_output_at(server->output_layout,
-															server->cursor->x,
-															server->cursor->y);
-	if ((!output) || (output == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'output' is NULL in 'server_cursor_axis'!");
-		return;
-	}
-	double delta = event->delta;
-	if (event->source == WLR_AXIS_SOURCE_FINGER) {
-		// Scale the delta for touchpad events
-		delta *= TOUCHPAD_SCROLL_SCALE;
-	}
 	else {
-		// Scale the delta for mouse wheel events
-		delta *= MOUSE_SCROLL_SCALE;
-	}
-	// Debounce small scroll values to filter out noise
-	if (fabs(delta) < SCROLL_DEBOUNCE_THRESHOLD) {
-		return;
-	}
-	switch (event->orientation) {
-		case WLR_AXIS_ORIENTATION_VERTICAL:
-			if (delta > 0) {
-				///fprintf(stderr, "Mouse wheel up\n");
-				// Zooming out on super key and scroll or if zoom_top_edge is enabled
-				if (strcmp(server->zoom_top_edge, "enabled") == 0) {
-					zoom_on_top_edge = true;
-				}
-				else if (strcmp(server->zoom_top_edge, "enabled") == 0) {
-					zoom_on_top_edge = false;
-				}
-				if ((server->super_key_down) || \
-					(server->cursor->x < 5 && server->cursor->y < 5 && zoom_on_top_edge)) {
-					// Zooming out
-					if ((server->zoom_factor - 0.5) <= 1.0) {
-						server->zoom_factor = 1.0;
-						server->pan_offset_x = 0;
-						server->pan_offset_y = 0;
-						server->background_matrix[2] = 0; // Reset background x offset
-						server->background_matrix[5] = 0; // Reset background y offset
-						// Scaling the matrix for background image	// Begin rendering
-						wlr_matrix_project_box(server->background_matrix, &(struct wlr_box){
-																		.x = 0,
-																		.y = 0,
-																		.width = output->width,
-																		.height = output->height},
-																		WL_OUTPUT_TRANSFORM_NORMAL,
-																		0.0,
-																		output->transform_matrix);
-					}
-					else if (server->zoom_factor > 1.0) {
-						// Decrease zooming factor
-						server->zoom_factor = server->zoom_factor - 0.3;
-						// Keeping zooming area centered
-						server->pan_offset_x = server->cursor->x * (server->zoom_factor - 1);
-						server->pan_offset_y = server->cursor->y * (server->zoom_factor - 1);
-					}
-				}
-			}
-			else if (delta < 0) {
-				///fprintf(stderr, "Mouse wheel down\n");
-				// Zooming in on super key and scroll or is zoom_top_edge is enabled
-				if (strcmp(server->zoom_top_edge, "enabled") == 0) {
-					zoom_on_top_edge = true;
-				}
-				else if (strcmp(server->zoom_top_edge, "enabled") == 0) {
-					zoom_on_top_edge = false;
-				}
-				if ((server->super_key_down) || \
-					(server->cursor->x < 5 && server->cursor->y < 5 && zoom_on_top_edge)) {
-					// Increase zooming factor
-					server->zoom_factor = server->zoom_factor + 0.3;
-					// Keeping zooming area centered
-					server->pan_offset_x = server->cursor->x * (server->zoom_factor - 1);
-					server->pan_offset_y = server->cursor->y * (server->zoom_factor - 1);
-				}
-			}
-			break;
-		case WLR_AXIS_ORIENTATION_HORIZONTAL:
-			if (delta > 0) {
-				// fprintf(stderr, "Mouse wheel left\n");
-			}
-			else if (delta < 0) {
-				// fprintf(stderr, "Mouse wheel right\n");
-			}
-			break;
+		// Handle case when no toplevel is found
+		fprintf(stderr, "Warning: No toplevel found at cursor position\n");
 	}
 
-	// If a surface is under the cursor, notify the seat of the axis event
-	wlr_seat_pointer_notify_axis(server->seat, event->time_msec, event->orientation,
-	                        		     delta, event->delta_discrete, event->source);
-	// Commit the rendered output
-	if (!wlr_output_commit(output)) {
-		wlr_log(WLR_ERROR, "Failed to commit output");
+	// Open the calendar
+	if (event->button == BTN_LEFT && server->time_hovered && server->time_is_clicked) {
+		///fprintf(stderr, "Closing calendar\n");
+		server->time_is_clicked = false;
+	}
+	else if (event->button == BTN_LEFT && server->time_hovered && !server->time_is_clicked) {
+		///fprintf(stderr, "Opening calendar\n");
+		server->time_is_clicked = true;
+		server->calendar_texture = true;
+	}
+	// Open the network applet
+	if (event->button == BTN_LEFT &&
+		server->network_hovered &&
+		server->network_is_clicked &&
+		!server->network_ly_hovered) {
+		///fprintf(stderr, "Closing network applet\n");
+		server->network_is_clicked = false;
+		server->network_ly_hovered = false;
+		server->network_password_prompt = false;
+	}
+	else if (event->button == BTN_LEFT && server->network_hovered && !server->network_is_clicked) {
+		///fprintf(stderr, "Opening network applet\n");
+		server->network_is_clicked = true;
+		server->network_texture = true;
+	}
+	// Clicking on a wifi network SSID name
+	if (event->button == BTN_LEFT &&
+		server->number_of_ssids > 0 &&
+		server->ssids[server->SsidPosition] != NULL) {
+
+		///fprintf(stderr, "Selected SSID: %s\n", server->ssids[server->SsidPosition]);
+		if (strcmp(server->ssids[1], "____________________________________________") != 0 &&
+					check_if_secured_ssid(server->ssids[server->SsidPosition])) {
+
+			server->ssids[0] = strdup(server->ssids[server->SsidPosition]);
+			server->ssids[1] = strdup("____________________________________________");
+			server->ssids[2] = strdup("Please enter password");
+			server->ssids[3] = strdup("|");
+			server->ssids[4] = strdup("Connect");
+			server->ssids[5] = strdup("Cancel");
+			server->network_password_prompt = true;
+		}
+		else if (strcmp(server->ssids[1], "____________________________________________") != 0 &&
+						!check_if_secured_ssid(server->ssids[server->SsidPosition])) {
+			///fprintf(stderr, "SSID: %s is free\n", server->ssids[server->SsidPosition]);
+
+			// Connecting to a free open wifi network
+			connect_to_open_ssid(server->ssids[server->SsidPosition]);
+			refresh_networks(server);
+		}
+		else if (strcmp(server->ssids[1], "____________________________________________") == 0) {
+			///fprintf(stderr, "Enter password and connect or cancel\n");
+			///fprintf(stderr, "Button clicked: %s\n", server->ssids[server->SsidPosition]);
+			if (strcmp(server->ssids[server->SsidPosition], "Connect") == 0) {
+				///fprintf(stderr, "Connecting to: %s with password %s\n", server->ssids[0],
+				///														server->ssids[3]);
+				
+				// Connecting to SSID
+				server->buff[0] = '\0';
+				connect_to_secured_ssid(server->ssids[0], server->ssids[3]);
+
+				// Refreshing the list of available wifi networks
+				refresh_networks(server);
+			}
+			else if (strcmp(server->ssids[server->SsidPosition], "Cancel") == 0) {
+				///fprintf(stderr, "Cancelled\n");
+				server->buff[0] = '\0';
+				refresh_networks(server);
+			}
+		}
+	}
+	// Clicking on windowlist
+	struct wlr_box output_box;
+	wlr_output_layout_get_box(server->output_layout, NULL, &output_box);
+
+	if (event->button == BTN_LEFT &&
+		!server->titles_clicked &&
+		(int)server->cursor->x > (output_box.width - 3) &&
+		(int)server->cursor->y < 3) {
+
+		// Opening window list dialog
+		///fprintf(stderr, "Windowlist clicked.\n");
+		// Window list
+		server->titles_clicked = true;
+		list_titles(server);
+	}
+	else if (event->button == BTN_LEFT && server->titles_clicked && server->titles_ly_hovered) {
+		// Closing window list dialog
+		///fprintf(stderr, "toplevel_info->titles[%d] = %s\n",
+		///		server->TitlesPosition,
+		///		server->toplevel_info.titles[server->TitlesPosition]);
+		server->titles_clicked = false;
+		///server->titles_ly_hovered = false;
+		struct woodland_view *found_toplevel = NULL;
+		if (!wl_list_empty(&server->toplevels)) {
+			struct woodland_view *iter;
+			wl_list_for_each(iter, &server->toplevels, link) {
+				if (iter && strcmp(iter->xdg_toplevel->app_id,
+					server->toplevel_info.app_id[server->TitlesPosition]) == 0) {
+					found_toplevel = iter;
+					///fprintf(stderr, "iter->xdg_toplevel->app_id: %s\n", iter->xdg_toplevel->app_id);
+					///fprintf(stderr, "server->toplevel_info.app_id[server->TitlesPosition]: %s\n",
+					///		server->toplevel_info.app_id[server->TitlesPosition]);
+				}
+			}
+		}
+		// Reset minimized flag to allow it to minimize again after unminimizing
+		found_toplevel->minimized = false;
+		wlr_scene_node_set_enabled(&found_toplevel->scene_tree->node, true);
+		wlr_scene_node_raise_to_top(&found_toplevel->scene_tree->node);
+		focus_toplevel(found_toplevel);
+
+		if (server->titles_scene_buffer) {
+			wlr_scene_node_destroy(&server->titles_scene_buffer->node);
+			server->titles_scene_buffer = NULL;
+		}
+	}
+	else if (event->button == BTN_LEFT && server->titles_clicked && !server->titles_ly_hovered) {
+		if (server->titles_scene_buffer) {
+			wlr_scene_node_destroy(&server->titles_scene_buffer->node);
+			server->titles_scene_buffer = NULL;
+		}
+		server->titles_clicked = false;
+		///fprintf(stderr, "Windowlist closed\n");
+	}
+
+	// Menu clicked
+	if (event->button == BTN_LEFT &&
+		!server->menu_clicked &&
+		(int)server->cursor->x < 30 &&
+		(int)server->cursor->y > (output_box.height - 30)) {
+
+		// Opening window list dialog
+		///fprintf(stderr, "Menu opened.\n");
+		// Menu list
+		server->menu_clicked = true;
+		show_menu(server);
+	}
+	else if (event->button == BTN_LEFT && server->menu_clicked && server->menu_ly_hovered) {
+		// Closing menu list dialog
+		///fprintf(stderr, "Closing menu.\n");
+		server->menu_clicked = false;
+		if (server->menu_scene_buffer) {
+			wlr_scene_node_destroy(&server->menu_scene_buffer->node);
+			server->menu_scene_buffer = NULL;
+		}
+		if (!server->menu_scene_buffer) {
+			if (server->m_cr) {
+				cairo_destroy(server->m_cr);
+				server->m_cr = NULL;
+			}
+			if (server->m_cairo_surface) {
+				cairo_surface_flush(server->m_cairo_surface);
+				cairo_surface_destroy(server->m_cairo_surface);
+				server->m_cairo_surface = NULL;
+			}
+			if (!server->m_cairo_surface && !server->m_cr) {
+				///printf("Running command: %s\n", server->items[server->menuPosition]);
+				usleep(1000);
+				run_cmd(server->items[server->menuPosition]);
+			}
+		}
+	}
+	else if (event->button == BTN_LEFT && server->menu_clicked && !server->menu_ly_hovered) {
+		if (server->menu_scene_buffer) {
+			wlr_scene_node_destroy(&server->menu_scene_buffer->node);
+			server->menu_scene_buffer = NULL;
+		}
+		server->menu_clicked = false;
+		///fprintf(stderr, "Menu closed\n");
+	}
+	// Switching off display
+	else if (event->button == BTN_RIGHT && server->brightness_change && !server->display_is_off) {
+		///fprintf(stderr, "Switching off display.\n");
+		struct woodland_output *output;
+		wl_list_for_each(output, &server->outputs, link) {
+			struct wlr_output_state state;
+			wlr_output_state_init(&state);
+			wlr_output_state_set_enabled(&state, false);
+			if (!wlr_output_commit_state(output->wlr_output, &state)) {
+				fprintf(stderr, "Display off failed to commit output state\n");
+			}
+			wlr_output_state_finish(&state);
+			wlr_output_schedule_frame(output->wlr_output);
+		}
+		server->display_is_off = true;
 	}
 }
 
 static void server_cursor_frame(struct wl_listener *listener, void *data) {
-	(void)data;
 	/* This event is forwarded by the cursor when a pointer emits an frame
 	 * event. Frame events are sent after regular pointer events to group
 	 * multiple events together. For instance, two axis events may happen at the
 	 * same time, in which case a frame event won't be sent in between. */
+	 (void)data;
 	struct woodland_server *server = wl_container_of(listener, server, cursor_frame);
-	if ((!server) || (server == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'server' is NULL in 'server_cursor_frame'!");
-		return;
-	}
 	/* Notify the client with pointer focus of the frame event. */
 	wlr_seat_pointer_notify_frame(server->seat);
 }
 
-/* Used to move all of the data necessary to render a surface from the top-level
- * frame handler to the per-surface render function. */
-struct render_data {
-	struct timespec *when;
-	struct wlr_output *output;
-	struct woodland_view *view;
-	struct wlr_renderer *renderer;
-	struct woodland_layer_view *lview;
-};
-
-static void render_surface(struct wlr_surface *surface, int sx, int sy, void *data) {
-	/* This function is called for every surface that needs to be rendered. */
-	if ((!surface) || (surface ==  NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'surface' is NULL in 'render_surface'!");
-		return;
-	}
-	struct render_data *rdata = data;
-	if ((!rdata) || (rdata == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'rdata' is NULL in 'render_surface'!");
-		return;
-	}
-	struct woodland_view *view = rdata->view;
-	if ((!view) || (view == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'view' is NULL in 'render_surface'!");
-		return;
-	}
-	struct wlr_output *output = rdata->output;
-	if ((!output) || (output == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'output' is NULL in 'render_surface'!");
-		return;
-	}
-
-	/* We first obtain a wlr_texture, which is a GPU resource. wlroots
-	 * automatically handles negotiating these with the client. The underlying
-	 * resource could be an opaque handle passed from the client, or the client
-	 * could have sent a pixel buffer which we copied to the GPU, or a few other
-	 * means. You don't have to worry about this, wlroots takes care of it. */
-	struct wlr_texture *texture = wlr_surface_get_texture(surface);
-	if ((!texture) || (texture == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'texture' is NULL in 'render_surface'!");
-		return;
-	}
-
-	/* The view has a position in layout coordinates. If you have two displays,
-	 * one next to the other, both 1080p, a view on the rightmost display might
-	 * have layout coordinates of 2000,100. We need to translate that to
-	 * output-local coordinates, or (2000 - 1920).
-	 * We also have to apply the scale factor for HiDPI outputs. This is only
-	 * part of the puzzle, TinyWL does not fully support HiDPI.
-	 */
-	struct wlr_box box;
-	box.x = view->x + sx;
-	box.y = view->y + sy;
-	box.width = surface->pending.width;
-	box.height = surface->pending.height;
-	/*
-	 * Those familiar with OpenGL are also familiar with the role of matrices
-	 * in graphics programming. We need to prepare a matrix to render the view
-	 * with. wlr_matrix_project_box is a helper which takes a box with a desired
-	 * x, y coordinates, width and height, and an output geometry, then
-	 * prepares an orthographic projection and multiplies the necessary
-	 * transforms to produce a model-view-projection matrix.
-	 *
-	 * Naturally you can do this any way you like, for example to make a 3D
-	 * compositor.
-	 */
-	wlr_matrix_project_box(view->server->matrix,
-						   &box,
-						   WL_OUTPUT_TRANSFORM_NORMAL,
-						   0.0,
-						   output->transform_matrix);
-	/* This takes our matrix, the texture, and an alpha, and performs the actual
-	 * rendering on the GPU.
-	 * If use 'wlr_render_texture_with_matrix' then chromium based browsers like brave
-	 * have glitches they can't properly use viewporter and can't scale properly,
-	 * that's why it's better to use 'wlr_render_subtexture_with_matrix'.
-	 */
-	struct wlr_fbox fbox;
-	wlr_surface_get_buffer_source_box(surface, &fbox);
-	wlr_render_subtexture_with_matrix(rdata->renderer, texture, &fbox, view->server->matrix, 1);
-	///wlr_render_texture_with_matrix(rdata->renderer, texture, view->server->matrix, 1);
-
-	/* This lets the client know that we've displayed that frame and it can
-	 * prepare another one now if it likes. */
-	wlr_surface_send_frame_done(surface, rdata->when);
-}
-
-static void render_layer_surface(struct wlr_surface *surface, int sx, int sy, void *data) {
-	(void)sx;
-	(void)sy;
-	if (!surface || !surface->buffer || !surface->buffer->texture) {
-		wlr_log(WLR_ERROR, "Error: Invalid surface in 'render_layer_surface'!");
-		return;
-	}
-	struct render_data *rdata = data;
-	if ((!rdata) || (rdata == NULL)) {
-		return;
-	}
-	struct wlr_output *output = rdata->output;
-	if ((!output) || (output == NULL)) {
-		return;
-	}
-	struct wlr_renderer *renderer = surface->renderer;
-	if ((!renderer) || (renderer == NULL)) {
-		return;
-	}
-	struct wlr_texture *texture = surface->buffer->texture;
-	if ((!texture) || (texture == NULL)) {
-		return;
-	}
-	struct woodland_view *view = rdata->view;
-	if ((!view) || (view == NULL)) {
-		return;
-	}
-
-	struct wlr_box box;
-	box.x = sx + rdata->lview->x;
-	box.y = sy + rdata->lview->y;
-	box.width = surface->current.width;
-	box.height = surface->current.height;
-
-	wlr_matrix_project_box(view->server->matrix,
-						   &box,
-						   WL_OUTPUT_TRANSFORM_NORMAL,
-						   0.0,
-						   output->transform_matrix);
-	wlr_render_texture_with_matrix(renderer, texture, view->server->matrix, 1);
-	wlr_surface_send_frame_done(surface, rdata->when);
-}
-
+/**
+ * This function is called every time an output is ready to display a frame,
+ * generally at the output's refresh rate (e.g. 60Hz).
+ * Retrieve the woodland_output structure from the listener
+ */
 static void output_frame(struct wl_listener *listener, void *data) {
 	(void)data;
-	// Get the current time
+	struct woodland_output *output = wl_container_of(listener, output, frame);
+	struct wlr_scene *scene = output->server->scene;
+	struct wlr_scene_output *scene_output = wlr_scene_get_scene_output(scene, output->wlr_output);
+
+	// Render the scene if needed and commit the output.
+	wlr_scene_output_commit(scene_output, NULL);;
+
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
-	// Retrieve the woodland_output structure from the listener
-	struct woodland_output *output = wl_container_of(listener, output, frame);
-	// This stopps the rendering completely after setting the screen black
-	if (output->server->render_full_stop) {
-		return;
-	}
-	// Define the renderer
-	struct wlr_renderer *renderer = output->server->renderer;
-	// Attach the renderer to the output
-	if (!wlr_output_attach_render(output->wlr_output, NULL)) {
-		wlr_log(WLR_ERROR, "Error: Failed to attach renderer in 'output_frame'!");
-		return;
-	}
-	// Begin rendering
-	wlr_renderer_begin(renderer, output->wlr_output->width, output->wlr_output->height);
-	// Stop rendering on idle and clear to black
-	if (!output->server->should_render) {
-		float color[4] = {0.0, 0.0, 0.0, 1.0}; // Set alpha to 1.0 for opaque black
-		wlr_renderer_clear(renderer, color);
-		wlr_renderer_end(renderer);
-		wlr_output_commit(output->wlr_output);
-		output->server->render_full_stop = true;
-		return;
-	}
-
-	// Zooming the output
-	if (output->server->zoom_factor > 1.0) {
-		// Set the new viewport with scaling and panning
-		glViewport(
-			(GLint)(-output->server->pan_offset_x),
-			(GLint)(-output->server->pan_offset_y),
-			(GLsizei)(output->wlr_output->width * output->server->zoom_factor),
-			(GLsizei)(output->wlr_output->height * output->server->zoom_factor)
-		);
-	}
-
-	// Prepare render_data structure
-	struct render_data rdata = {
-		.output = output->wlr_output,
-		.renderer = renderer,
-		.when = &now
-	};
-
-	// Render the background image if available
-	if (output->server->background_texture) {
-		wlr_render_texture_with_matrix(renderer,
-									   output->server->background_texture,
-									   output->server->background_matrix,
-									   1.0f);
-	}
-	else {
-		// Clear with default color if background texture is not available
-		float color[4] = {0.1, 0.1, 0.1, 1.0};
-		wlr_renderer_clear(renderer, color);
-	}
-
-	// Render each view in reverse order
-	struct woodland_view *view;
-	wl_list_for_each_reverse(view, &output->server->views, link) {
-		if (view->mapped) {
-			rdata.view = view;
-			wlr_xdg_surface_for_each_surface(view->xdg_surface, render_surface, &rdata);
-		}
-	}
-
-	// Render each layer view in reverse order
-	struct woodland_layer_view *layer_view;
-	wl_list_for_each_reverse(layer_view, &output->server->layer_surfaces, link) {
-		if (layer_view->mapped) {
-			rdata.lview = layer_view;
-			wlr_layer_surface_v1_for_each_surface(layer_view->layer_surface,
-												  render_layer_surface,
-												  &rdata);
-		}
-	}
-
-	// Render software cursors
-	wlr_output_render_software_cursors(output->wlr_output, NULL);
-	// End rendering
-	wlr_renderer_end(renderer);
-	// Commit the rendered output
-	if (!wlr_output_commit(output->wlr_output)) {
-		wlr_log(WLR_ERROR, "Failed to commit output");
-	}
+	wlr_scene_output_send_frame_done(scene_output, &now);
 }
 
-static void handle_output_configuration_applied(struct wl_listener *listener, void *data) {
-	struct wlr_output_configuration_v1 *config = data;
-	if (!config) {
-		wlr_log(WLR_ERROR, "Error: 'config' is NULL in 'handle_output_configuration_applied'.");
-		return;
-	}
-
-	struct woodland_server *server = wl_container_of(listener,
-													 server,
-													 output_configuration_applied);
-
-	bool success = true; // Assume success initially
-
-	// Iterate over each output configuration and apply it
-	struct wlr_output_configuration_head_v1 *config_head;
-	wl_list_for_each(config_head, &config->heads, link) {
-		struct wlr_output *output = config_head->state.output;
-		if (!output) {
-			wlr_log(WLR_ERROR, "Error: Output is NULL in configuration.");
-			success = false;
-			break;
-		}
-
-		// Apply the mode, if set
-		if (config_head->state.mode) {
-			wlr_output_set_mode(output, config_head->state.mode);
-		}
-		else {
-			// Apply custom mode
-			wlr_output_set_custom_mode(output,
-									   config_head->state.custom_mode.width,
-									   config_head->state.custom_mode.height,
-									   config_head->state.custom_mode.refresh);
-		}
-
-		// Apply the transformation
-		wlr_output_set_transform(output, config_head->state.transform);
-
-		// Apply the position
-		wlr_output_layout_add(server->output_layout, output,
-							  config_head->state.x, config_head->state.y);
-
-		// Commit the output
-		if (!wlr_output_commit(output)) {
-			wlr_log(WLR_ERROR, "Failed to commit output.");
-			success = false;
-			break;
-		}
-	}
-
-	if (success) {
-		wlr_output_configuration_v1_send_succeeded(config);
-	}
-	else {
-		wlr_output_configuration_v1_send_failed(config);
-	}
-
-	// Destroy the configuration after handling it
-	wlr_output_configuration_v1_destroy(config);
+static void output_destroy(struct wl_listener *listener, void *data) {
+	(void)data;
+	struct woodland_output *output = wl_container_of(listener, output, destroy);
+	WL_LIST_SAFE_REMOVE(&output->frame.link);
+	WL_LIST_SAFE_REMOVE(&output->request_state.link);
+	WL_LIST_SAFE_REMOVE(&output->destroy.link);
+	WL_LIST_SAFE_REMOVE(&output->link);
+	free(output);
 }
 
-static void handle_output_configuration_tested(struct wl_listener *listener, void *data) {
-	struct wlr_output_configuration_v1 *config = data;
-	if (!config) {
-		wlr_log(WLR_ERROR, "Error: 'config' is NULL in 'handle_output_configuration_tested'.");
-		return;
-	}
-
-	struct woodland_server *server = wl_container_of(listener, server, output_configuration_tested);
-
-	bool success = true; // Assume success initially
-
-	// Iterate over each output configuration and test it
-	struct wlr_output_configuration_head_v1 *config_head;
-	wl_list_for_each(config_head, &config->heads, link) {
-		struct wlr_output *output = config_head->state.output;
-		if (!output) {
-			wlr_log(WLR_ERROR, "Error: Output is NULL in configuration.");
-			success = false;
-			break;
-		}
-		// Perform necessary tests for each output configuration
-		// If any test fails, set success to false
-		// For example, check resolution, refresh rate, etc.
-		// if (some_test_failed) {
-		//     success = false;
-		//     break;
-		// }
-	}
-
-	if (success) {
-		wlr_output_configuration_v1_send_succeeded(config);
-	}
-	else {
-		wlr_output_configuration_v1_send_failed(config);
-	}
-
-	// Destroy the configuration after handling it
-	wlr_output_configuration_v1_destroy(config);
+static void output_request_state(struct wl_listener *listener, void *data) {
+	/* This function is called when the backend requests a new state for
+	 * the output. For example, Wayland and xx11 backends request a new mode
+	 * when the output window is resized. */
+	(void)data;
+	struct woodland_output *output = wl_container_of(listener, output, request_state);
+	const struct wlr_output_event_request_state *event = data;
+	wlr_output_commit_state(output->wlr_output, event->state);
 }
 
 static void server_new_output(struct wl_listener *listener, void *data) {
 	/* This event is raised by the backend when a new output (aka a display or
 	 * monitor) becomes available. */
+	(void)data;
 	struct wlr_output *wlr_output = data;
 	if ((!wlr_output) || (wlr_output == NULL)) {
 		wlr_log(WLR_ERROR, "Error: Empty 'wlr_output' in 'server_new_output'!");
@@ -2215,42 +2092,52 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 	/* Configures the output created by the backend to use our allocator
 	 * and our renderer */
 	wlr_output_init_render(wlr_output, server->allocator, server->renderer);
+		/* The output may be disabled, switch it on. */
+	struct wlr_output_state state;
+	wlr_output_state_init(&state);
+	wlr_output_state_set_enabled(&state, true);
+
 	/* Some backends don't have modes. DRM+KMS does, and we need to set a mode
 	 * before we can use the output. The mode is a tuple of (width, height,
 	 * refresh rate), and each monitor supports only a specific set of modes. We
 	 * just pick the monitor's preferred mode, a more sophisticated compositor
 	 * would let the user configure it. */
-	
-	if (!wl_list_empty(&wlr_output->modes)) {
-		struct wlr_output_mode *mode = wlr_output_preferred_mode(wlr_output);
-		wlr_output_set_mode(wlr_output, mode);
-		wlr_output_enable(wlr_output, true);
-		if (!wlr_output_commit(wlr_output)) {
-			return;
-		}
+	struct wlr_output_mode *mode = wlr_output_preferred_mode(wlr_output);
+	if (mode != NULL) {
+		wlr_output_state_set_mode(&state, mode);
 	}
+
+	// Implementing gray background
+	struct wlr_scene *scene = server->scene;
+	float bg_color[4] = { 0.2, 0.2, 0.2, 1.0 }; // dark gray background
+	wlr_scene_rect_create(&scene->tree, wlr_output->width, wlr_output->height, bg_color);
+
+	/* Atomically applies the new output state. */
+	wlr_output_commit_state(wlr_output, &state);
+	wlr_output_state_finish(&state);
 	/* Allocates and configures our state for this output */
 	struct woodland_output *output = calloc(1, sizeof(struct woodland_output));
 	if (output == NULL) {
 		wlr_log(WLR_ERROR, "Error: Failed to allocate memory for woodland_output!");
 		return;
-    }
+	}
 	output->wlr_output = wlr_output;
 	output->server = server;
-	output->server->should_render = true;
-	// Matrix for background image
-	wlr_matrix_project_box(output->server->background_matrix, &(struct wlr_box){
-							.x = -output->server->pan_offset_x,
-							.y = -output->server->pan_offset_y,
-							.width = output->wlr_output->width * output->server->zoom_factor,
-							.height = output->wlr_output->height * output->server->zoom_factor},
-							WL_OUTPUT_TRANSFORM_NORMAL,
-							0.0,
-							output->wlr_output->transform_matrix);
-	/* Sets up a listener for the frame notify event. */
+
+	/* Sets up a listener for the frame event. */
 	output->frame.notify = output_frame;
 	wl_signal_add(&wlr_output->events.frame, &output->frame);
+
+	/* Sets up a listener for the state request event. */
+	output->request_state.notify = output_request_state;
+	wl_signal_add(&wlr_output->events.request_state, &output->request_state);
+
+	/* Sets up a listener for the destroy event. */
+	output->destroy.notify = output_destroy;
+	wl_signal_add(&wlr_output->events.destroy, &output->destroy);
+
 	wl_list_insert(&server->outputs, &output->link);
+
 	/* Adds this to the output layout. The add_auto function arranges outputs
 	 * from left-to-right in the order they appear. A more sophisticated
 	 * compositor would let the user configure the arrangement of outputs in the
@@ -2260,186 +2147,64 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 	 * display, which Wayland clients can see to find out information about the
 	 * output (such as DPI, scale factor, manufacturer, etc).
 	 */
-	wlr_output_layout_add_auto(server->output_layout, wlr_output);
+	struct wlr_output_layout_output *l_output = wlr_output_layout_add_auto(server->output_layout, wlr_output);
+
+	output->scene_output = wlr_scene_output_create(server->scene, wlr_output);
+	wlr_scene_output_layout_add_output(server->scene_layout, l_output, output->scene_output);
+
+	// updated the output layout connection:
+	uint32_t caps = WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD;
+	wlr_seat_set_capabilities(server->seat, caps);
 }
 
-/************************ XDG Shell and foreign toplevel implementation ***********************/
-static void _xdg_surface_destroy(struct wl_listener *listener, void *data) {
-	(void)data;
-	wlr_log(WLR_INFO, "XDG surface destroying...");
+static void begin_interactive(struct woodland_view *toplevel,
+							enum woodland_cursor_mode mode,
+							uint32_t edges) {
+	/* This function sets up an interactive move or resize operation, where the
+	 * compositor stops propegating pointer events to clients and instead
+	 * consumes them itself, to move or resize windows. */
+	struct woodland_server *server = toplevel->server;
 
-	// Retrieve the view associated with this listener
-	struct woodland_view *view = wl_container_of(listener, view, destroy);
-	if (!view) {
-		wlr_log(WLR_ERROR, "Error: Empty 'view' in '_xdg_surface_destroy'!");
-		return;
-	}
+	server->grabbed_toplevel = toplevel;
+	server->cursor_mode = mode;
 
-	// Ensure the server and seat are valid
-	struct woodland_server *server = view->server;
-	if (!server) {
-		wlr_log(WLR_ERROR, "Error: Empty 'server' in '_xdg_surface_destroy'!");
-		return;
-	}
-
-	struct wlr_seat *seat = server->seat;
-	if (!seat) {
-		wlr_log(WLR_ERROR, "Error: Empty 'seat' in '_xdg_surface_destroy'!");
-		return;
-	}
-
-	// Check for the next view to focus
-	bool focus_surface = false;
-	struct woodland_view *prev_view = NULL;
-	if (!wl_list_empty(&server->views)) {
-		struct woodland_view *iter;
-		wl_list_for_each_reverse(iter, &server->views, link) {
-			if (iter && iter != view) {
-				prev_view = iter;
-				///break;
-			}
-		}
-	}
-
-	if (prev_view && prev_view != view) {
-		struct wlr_surface *prev_surface = prev_view->xdg_surface->surface;
-		if (prev_surface && prev_surface != view->xdg_surface->surface) {
-			focus_surface = true;
-		}
-	}
-	// Clean up the foreign toplevel handle if it exists
-	if (view->xdg_surface->toplevel->requested.minimized && view->foreign_toplevel) {
-		wlr_foreign_toplevel_handle_v1_destroy(view->foreign_toplevel);
-	}
-	// Remove the view from all lists it is part of
-	if (!wl_list_empty(&view->map.link)) {
-		wl_list_remove(&view->map.link);
-	}
-	if (!wl_list_empty(&view->unmap.link)) {
-		wl_list_remove(&view->unmap.link);
-	}
-	if (!wl_list_empty(&view->destroy.link)) {
-		wl_list_remove(&view->destroy.link);
-	}
-	if (!wl_list_empty(&view->set_title.link)) {
-		wl_list_remove(&view->set_title.link);
-	}
-	if (!wl_list_empty(&view->set_app_id.link)) {
-		wl_list_remove(&view->set_app_id.link);
-	}
-	if (!wl_list_empty(&view->request_move.link)) {
-		wl_list_remove(&view->request_move.link);
-	}
-	if (!wl_list_empty(&view->request_resize.link)) {
-		wl_list_remove(&view->request_resize.link);
-	}
-	if (!wl_list_empty(&view->request_minimize.link)) {
-		wl_list_remove(&view->request_minimize.link);
-	}
-	if (!wl_list_empty(&view->request_fullscreen.link)) {
-		wl_list_remove(&view->request_fullscreen.link);
-	}
-	if (view->link.prev != &view->link && view->link.next != &view->link) {
-		wl_list_remove(&view->link);
-	}
-	if ((!view) || (view != NULL)) {
-		free(view);
-		view = NULL;
-	}
-
-	// If we found a surface to focus, do so
-	if (focus_surface && prev_view) {
-		struct wlr_xdg_surface *previous = prev_view->xdg_surface;
-		if (previous) {
-			wlr_log(WLR_INFO, "Activating previous surface: %p", previous);
-			wlr_xdg_toplevel_set_activated(previous, true);
-			if (seat->keyboard_state.keyboard) {
-				wlr_log(WLR_INFO, "Notifying keyboard enter...");
-				wlr_seat_keyboard_notify_enter(seat, previous->surface,
-											   seat->keyboard_state.keyboard->keycodes,
-											   seat->keyboard_state.keyboard->num_keycodes,
-											   &seat->keyboard_state.keyboard->modifiers);
-			}
-			else {
-				wlr_log(WLR_ERROR, "No keyboard found to notify enter.");
-			}
-		}
-		else {
-			wlr_log(WLR_ERROR, "Previous surface is not a valid xdg_surface to focus.");
-		}
+	if (mode == WOODLAND_CURSOR_MOVE) {
+		server->grab_x = server->cursor->x - toplevel->scene_tree->node.x;
+		server->grab_y = server->cursor->y - toplevel->scene_tree->node.y;
 	}
 	else {
-		wlr_log(WLR_INFO, "No previous surface to focus.");
-	}
+		struct wlr_box *geo_box = &toplevel->xdg_toplevel->base->current.geometry;
 
-	wlr_log(WLR_INFO, "XDG surface destroyed!");
+		double border_x = (toplevel->scene_tree->node.x + geo_box->x) +
+			((edges & WLR_EDGE_RIGHT) ? geo_box->width : 0);
+		double border_y = (toplevel->scene_tree->node.y + geo_box->y) +
+			((edges & WLR_EDGE_BOTTOM) ? geo_box->height : 0);
+		server->grab_x = server->cursor->x - border_x;
+		server->grab_y = server->cursor->y - border_y;
+
+		server->grab_geobox = *geo_box;
+		server->grab_geobox.x += toplevel->scene_tree->node.x;
+		server->grab_geobox.y += toplevel->scene_tree->node.y;
+
+		server->resize_edges = edges;
+	}
 }
 
-static void handle_foreign_toplevel_destroy(struct wl_listener *listener, void *data) {
-	(void)data;
-	wlr_log(WLR_INFO, "Foreign handle destroying...");
-	struct woodland_view *view = wl_container_of(listener, view, foreign_destroy);
-	if ((!view) || (view == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'view' in 'handle_foreign_toplevel_destroy'!");
-		return;
+// newly added // Add this helper function
+static void normalize_resize_edges(struct woodland_server *server) {
+	if ((server->resize_edges & (WLR_EDGE_LEFT|WLR_EDGE_RIGHT)) == 
+								(WLR_EDGE_LEFT|WLR_EDGE_RIGHT)) {
+		server->resize_edges &= ~(WLR_EDGE_LEFT|WLR_EDGE_RIGHT);
 	}
-	if (!wl_list_empty(&view->foreign_minimize.link)) {
-		wl_list_remove(&view->foreign_minimize.link);
+	if ((server->resize_edges & (WLR_EDGE_TOP|WLR_EDGE_BOTTOM)) == 
+								(WLR_EDGE_TOP|WLR_EDGE_BOTTOM)) {
+		server->resize_edges &= ~(WLR_EDGE_TOP|WLR_EDGE_BOTTOM);
 	}
-	if (!wl_list_empty(&view->foreign_activate_request.link)) {
-		wl_list_remove(&view->foreign_activate_request.link);
-	}
-	if (!wl_list_empty(&view->foreign_destroy.link)) {
-		wl_list_remove(&view->foreign_destroy.link);
-	}
-	wlr_log(WLR_INFO, "Foreign handle destroyed!");
 }
 
-static void handle_foreign_toplevel_minimize(struct wl_listener *listener, void *data) {
-	(void)data;
-	wlr_log(WLR_INFO, "Foreign handle minimizing...");
-	struct woodland_view *view = wl_container_of(listener, view, foreign_minimize);
-	if ((!view) || (view == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'view' in 'handle_foreign_toplevel_destroy'!");
-		return;
-	}
-	if (view->foreign_toplevel) {
-		wlr_foreign_toplevel_handle_v1_set_minimized(view->foreign_toplevel, true);
-		// Remove the view from the list of active views
-		if (!wl_list_empty(&view->link)) {
-			wl_list_remove(&view->link);
-			// Add it to the list of minimized views
-			wl_list_insert(&view->server->minimized_views, &view->link);
-		}
-		view->mapped = false;
-	}
-	wlr_log(WLR_INFO, "Foreign handle minimized!");
-}
-
-static void handle_foreign_activate_request(struct wl_listener *listener, void *data) {
-	(void)data;
-	wlr_log(WLR_INFO, "Foreign handle activating...");
-	struct woodland_view *view = wl_container_of(listener, view, foreign_activate_request);
-	if (view && view->foreign_toplevel) {
-		// Map the surface to show it
-		if (!view->mapped) {
-			view->mapped = true;
-		}
-		if (view->xdg_surface->surface) {
-			if (view->foreign_toplevel) {
-				wlr_foreign_toplevel_handle_v1_set_activated(view->foreign_toplevel, true);
-				wlr_foreign_toplevel_handle_v1_set_minimized(view->foreign_toplevel, false);
-			}
-			focus_view(view, view->xdg_surface->surface);
-		}
-	}
-	else {
-		wlr_log(WLR_ERROR, "Return from 'handle_foreign_activate_request'!");
-		return;
-	}
-	wlr_log(WLR_INFO, "Foreign handle activated!");
-}
-
+/**
+ ******************* XDG Toplevel, Foreign toplevel and Popups management *******************
+ */
 /* Get user defined window placement coordinates from wooldand.ini config */
 static void get_window_placement(char *file, char *ids[], char *identifiers[], int x[], int y[]) {
 	FILE *fp = fopen(file, "r");
@@ -2527,426 +2292,142 @@ static void get_window_placement(char *file, char *ids[], char *identifiers[], i
 	fclose(fp);
 }
 
-static void xdg_surface_set_title(struct wl_listener *listener, void *data) {
-	// Get the wlr_xdg_surface and ensure it's not null
-	struct wlr_xdg_surface *xdg_surface = data;
-	if (xdg_surface == NULL) {
-		wlr_log(WLR_ERROR, "Error: Empty 'xdg_surface' in 'xdg_surface_set_title'!");
+/**
+ * Handle activation of a foreign toplevel.
+ *
+ * @param listener The listener that triggered this function.
+ * @param data The event data.
+ */
+static void handle_activate(struct wl_listener *listener, void *data) {
+	// Get the event and toplevel from the listener and data
+	struct wlr_foreign_toplevel_handle_v1_activated_event *event = data;
+	if (!event) {
+		wlr_log(WLR_ERROR, "Activation failed: Missing event data");
 		return;
 	}
 
-	// Get the toplevel structure and ensure it's not null
-	struct wlr_xdg_toplevel *toplevel = xdg_surface->toplevel;
-	if (toplevel == NULL) {
-		wlr_log(WLR_ERROR, "Error: Empty 'toplevel' in 'xdg_surface_set_title'!");
+	struct woodland_view *toplevel = wl_container_of(listener, toplevel, request_activate);
+	if (!toplevel) {
+		wlr_log(WLR_ERROR, "Activation failed: Missing toplevel");
 		return;
 	}
 
-	// Get the view structure and ensure it's not null
-	struct woodland_view *view = wl_container_of(listener, view, set_title);
-	if ((!view) || (view == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'view' in 'xdg_surface_set_title'!");
-		return;
-	}
-	// 'toplevel->title' is the new updated title when for instance you click on a new tab
-	// on mousepad then 'toplevel->title' is the new title of the mousepad
-	// it is not the same titme that the toplevel was originally mapped with
-	// noe we need to ckeck is it's NULL or empty then assign the string "nil"
-	if ((!toplevel->title) || (toplevel->title == NULL)) {
-		toplevel->title = "nil";
-	}
-	// If foreign_toplevel is set and not minimized, set the title
-	if (view->foreign_toplevel && !view->xdg_surface->toplevel->requested.minimized) {
-		wlr_foreign_toplevel_handle_v1_set_title(view->foreign_toplevel, toplevel->title);
-	}
-	wlr_log(WLR_INFO, "XDG toplevel title set");
-}
-
-static void xdg_surface_set_appid(struct wl_listener *listener, void *data) {
-	(void)listener;
-	(void)data;
-
-	// Get the wlr_xdg_surface and ensure it's not null
-	struct wlr_xdg_surface *xdg_surface = data;
-	if (xdg_surface == NULL) {
-		wlr_log(WLR_ERROR, "Error: Empty 'xdg_surface' in 'xdg_surface_set_appid'!");
+	// Check if the event's toplevel is valid
+	if (!event->toplevel) {
+		wlr_log(WLR_ERROR, "Activation failed: Invalid foreign handle");
 		return;
 	}
 
-	// Get the toplevel structure and ensure it's not null
-	struct wlr_xdg_toplevel *toplevel = xdg_surface->toplevel;
-	if (toplevel == NULL) {
-		wlr_log(WLR_ERROR, "Error: Empty 'toplevel' in 'xdg_surface_set_appid'!");
-		return;
-	}
-
-	// Get the view structure and ensure it's not null
-	struct woodland_view *view = wl_container_of(listener, view, set_app_id);
-	if (view == NULL) {
-		wlr_log(WLR_ERROR, "Error: Empty 'view' in 'xdg_surface_set_appid'!");
-		return;
-	}
-
-	if ((!toplevel->app_id) || (toplevel->app_id == NULL)) {
-		toplevel->app_id = "nil";
-	}
-	// If foreign_toplevel is set and not minimized, set the title
-	if (view->foreign_toplevel && !view->xdg_surface->toplevel->requested.minimized) {
-		wlr_foreign_toplevel_handle_v1_set_app_id(view->foreign_toplevel, toplevel->app_id);
-	}
-	wlr_log(WLR_INFO, "XDG toplevel app_id set");
-}
-
-static void xdg_surface_map(struct wl_listener *listener, void *data) {
-	/* Called when the surface is mapped, or ready to display on-screen. */
-	(void)data;
-	wlr_log(WLR_INFO, "XDG surface mapping...");
-	struct woodland_view *view = wl_container_of(listener, view, map);
-	if ((!view) || (view == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'view' in 'xdg_surface_map'!");
-		return;
-	}
-	struct wlr_output *output = wlr_output_layout_output_at(view->server->output_layout,
-																view->server->cursor->x,
-																view->server->cursor->y);
-	if ((!output) || (output == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'output' in 'xdg_surface_map'!");
-		return;
-	}
-
-	struct wlr_foreign_toplevel_manager_v1 *foreign_topmgr = \
-						view->server->wlr_foreign_toplevel_mgr;
-	if ((!foreign_topmgr) || (foreign_topmgr == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'foreign_topmgr' in 'xdg_surface_map'!");
-		return;
-	}
-	// Set the new window position
-	struct wlr_box geo_box;
-	wlr_xdg_surface_get_geometry(view->xdg_surface, &geo_box);
-
-	// Center the window
-	view->x = (output->width - geo_box.width) / 2;
-	view->y = (output->height - geo_box.height) / 2;
-
-	// If the window width or height exceeds the screen geometry then resize to fit the screen
-	if (geo_box.width > output->width) {
-		wlr_xdg_toplevel_set_size(view->xdg_surface, output->width, geo_box.height);
-	}
-	if (geo_box.height > output->height) {
-		wlr_xdg_toplevel_set_size(view->xdg_surface, geo_box.width, output->height);
-	}
-
-	// Executing window placement
-	const char *title = NULL;
-	const char *app_id = NULL;
-	title = view->xdg_surface->toplevel->title;
-	if ((!title) || (title == NULL)) {
-		title = "nil";
-	}
-	app_id = view->xdg_surface->toplevel->app_id;
-	if ((!app_id) || (app_id == NULL)) {
-		app_id = "nil";
-	}
-
-	// Executing window placement
-	char *ids[1024] = {0};
-	char *identifiers[1024] = {0};
-	int x_arr[1024] = {0};
-	int y_arr[1024] = {0};
-
-	// Gets all the titles or app_id of windows in woodland.ini marked for user defined placement
-	// ids - is a char array containing the prefixes keywords (either keyword 'title:' or 'app_id:'
-	// identifiers - is a char array containing the actual window title or app_id
-	// x_arr and y_arr - char arrays containing x and y coordinates of windows to be placed
-	get_window_placement(view->server->config, ids, identifiers, x_arr, y_arr);
-
-	// If 'surface->current.committed' == WLR_SURFACE_STATE_BUFFER it lets us know that
-	// the client required a toplevel move or resize and we can use this information
-	// to filter which windows should be let to use the client required coordinates
-	// and which windows should be always placed in center.
-	bool clientRequiredPlacement = false;
-	if (view->xdg_surface->surface->current.committed == WLR_SURFACE_STATE_BUFFER) {
-		clientRequiredPlacement = true;
-	}
-
-	if (title != NULL && app_id == NULL) {
-		for (int i = 0; i < 1024 && ids[i] != NULL; i++) {
-			if (strcmp(ids[i], "title:") == 0) {
-				// If this title is found in woodland.ini for automatic placement
-				if (strcmp(identifiers[i], title) == 0) {
-					view->x = x_arr[i];
-					view->y = y_arr[i];
-					break;
-				}
-				if (strcmp(identifiers[i], title) != 0 && clientRequiredPlacement && \
-													geo_box.x != 0 && geo_box.y != 0) {
-					view->x = geo_box.x;
-					view->y = geo_box.y;
-					break;
-				}
-			}
-			// Free resources
-			if (ids[i] != NULL) {
-		    	free(ids[i]);
-		    	ids[i] = NULL;
-		    }
-			if (identifiers[i] != NULL) {
-			    free(identifiers[i]);
-			    identifiers[i] = NULL;
+	// Check if the toplevel's foreign handle matches the event's toplevel
+	if (toplevel->foreign_handle != event->toplevel) {
+		wlr_log(WLR_ERROR, "Handle mismatch: %p (expected) vs %p (actual)", toplevel->foreign_handle,
+																			event->toplevel);
+		// Find the correct toplevel based on the event's toplevel
+		struct woodland_view *correct_toplevel = NULL;
+		struct woodland_view *tmp_toplevel;
+		wl_list_for_each(tmp_toplevel, &toplevel->server->toplevels, link) {
+			if (tmp_toplevel->foreign_handle == event->toplevel) {
+				correct_toplevel = tmp_toplevel;
+				break;
 			}
 		}
-	}
-	else if (title == NULL && app_id != NULL) {
-		for (int i = 0; i < 1024 && ids[i] != NULL; i++) {
-			if (strcmp(ids[i], "app_id:") == 0) {
-				if (strcmp(identifiers[i], app_id) == 0) {
-					view->x = x_arr[i];
-					view->y = y_arr[i];
-					break;
-				}
-				if (strcmp(identifiers[i], app_id) != 0 && clientRequiredPlacement && \
-													geo_box.x != 0 && geo_box.y != 0) {
-					view->x = geo_box.x;
-					view->y = geo_box.y;
-					break;
-				}
-			}
-			// Free resources
-			if (ids[i] != NULL) {
-		    	free(ids[i]);
-		    	ids[i] = NULL;
-		    }
-			if (identifiers[i] != NULL) {
-			    free(identifiers[i]);
-			    identifiers[i] = NULL;
-			}
+		// If no matching toplevel is found, log an error and return
+		if (!correct_toplevel) {
+			wlr_log(WLR_ERROR, "Failed to find toplevel for handle %p", event->toplevel);
+			return;
 		}
-	}
-	else if (title != NULL && app_id != NULL) {
-		for (int i = 0; i < 1024 && ids[i] != NULL; i++) {
-			// Set position for windows titles
-			if (strcmp(ids[i], "app_id:") == 0) {
-				if (strcmp(identifiers[i], app_id) == 0) {
-					view->x = x_arr[i];
-					view->y = y_arr[i];
-					break;
-				}
-				if (strcmp(identifiers[i], app_id) != 0 && clientRequiredPlacement && \
-													geo_box.x != 0 && geo_box.y != 0) {
-					view->x = geo_box.x;
-					view->y = geo_box.y;
-					break;
-				}
-			}
-			else if (strcmp(ids[i], "title:") == 0) {
-				if (strcmp(identifiers[i], title) == 0) {
-					view->x = x_arr[i];
-					view->y = y_arr[i];
-					break;
-				}
-				if (strcmp(identifiers[i], title) != 0 && clientRequiredPlacement && \
-													geo_box.x != 0 && geo_box.y != 0) {
-					view->x = geo_box.x;
-					view->y = geo_box.y;
-					break;
-				}
-			}
-			// Free resources
-			if (ids[i] != NULL) {
-		    	free(ids[i]);
-		    	ids[i] = NULL;
-		    }
-			if (identifiers[i] != NULL) {
-			    free(identifiers[i]);
-			    identifiers[i] = NULL;
-			}
-		}
+		// Update the toplevel to the correct one
+		toplevel = correct_toplevel;
 	}
 
-	// Create a foreign toplevel handle
-	// First we need to check if this toplevel has been minimized
-	// if it's been minimized then we must not create a new one
-	// instead we just activate it, otherwise there will be
-	// many duplicates of the same items in window lust and crashes
-	if (!view->xdg_surface->toplevel->requested.minimized && title != NULL && app_id != NULL) {
-		view->foreign_toplevel = wlr_foreign_toplevel_handle_v1_create(foreign_topmgr);
+	// Focus the window and bring it to front
+	focus_toplevel(toplevel);
 
-		// Set title and app_id
-		wlr_foreign_toplevel_handle_v1_set_title(view->foreign_toplevel, title);
-		wlr_foreign_toplevel_handle_v1_set_app_id(view->foreign_toplevel, app_id);
+	// Update foreign handle state
+	wlr_foreign_toplevel_handle_v1_set_activated(event->toplevel, true);
 
-		wl_list_init(&view->foreign_minimize.link);
-		wl_list_init(&view->foreign_activate_request.link);
-		wl_list_init(&view->foreign_destroy.link);
-
-		// Add listeners for foreign toplevel events
-		view->foreign_minimize.notify = handle_foreign_toplevel_minimize;
-		wl_signal_add(&view->foreign_toplevel->events.request_minimize, &view->foreign_minimize);
-
-		view->foreign_activate_request.notify = handle_foreign_activate_request;
-		wl_signal_add(&view->foreign_toplevel->events.request_activate,
-										&view->foreign_activate_request);
-
-		view->foreign_destroy.notify = handle_foreign_toplevel_destroy;
-		wl_signal_add(&view->foreign_toplevel->events.destroy, &view->foreign_destroy);
+	if (toplevel->xdg_toplevel) {
+		wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, true);
 	}
-	// Set mapped flag, this flag is read by rendering function
-	// and it renders only a view with mapped flag true
-	view->mapped = true;
-	
-	// Focus the view
-	focus_view(view, view->xdg_surface->surface);
-
-	wlr_log(WLR_INFO, "XDG surface mapped!");
+	else {
+		wlr_log(WLR_ERROR, "Missing XDG toplevel for handle %p", event->toplevel);
+	}
+	wlr_log(WLR_ERROR, "Successfully activated XDG toplevel");
 }
 
-static void xdg_surface_unmap(struct wl_listener *listener, void *data) {
+static void handle_close(struct wl_listener *listener, void *data) {
 	(void)data;
-	wlr_log(WLR_INFO, "XDG surface unmapping...");
-	/* Called when the surface is unmapped, and should no longer be shown. */
-	struct woodland_view *view = wl_container_of(listener, view, unmap);
-	if ((!view) || (view == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'view' in 'xdg_surface_unmap'!");
+	struct woodland_view *toplevel = wl_container_of(listener, toplevel, request_close);
+	if (!toplevel) {
+		wlr_log(WLR_ERROR, "Close request failed: No toplevel found");
 		return;
 	}
-	view->mapped = false;
-	// Clean up the foreign toplevel handle if it exists
-	if (view->foreign_toplevel->state != WLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED && \
-		(!view->xdg_surface->toplevel->requested.minimized && view->foreign_toplevel)) {
-		wlr_foreign_toplevel_handle_v1_destroy(view->foreign_toplevel);
-	}
-	wlr_log(WLR_INFO, "XDG surface unmapped!");
-}
-
-static void begin_interactive(struct woodland_view *view,
-							  enum woodland_cursor_mode mode,
-							  uint32_t edges) {
-	/* This function sets up an interactive move or resize operation, where the
-	 * compositor stops propagating pointer events to clients and instead
-	 * consumes them itself, to move or resize windows. */
-	if (!view) {
-		wlr_log(WLR_ERROR, "Error: Empty 'view' in 'begin_interactive'!");
-		return;
-	}
-	if (!mode) {
-		wlr_log(WLR_ERROR, "Error: Empty 'mode' in 'begin_interactive'!");
-		return;
-	}
-	struct woodland_server *server = view->server;
-	if (!server) {
-		wlr_log(WLR_ERROR, "Error: Empty 'server' in 'begin_interactive'!");
-		return;
-	}
-	struct wlr_surface *focused_surface = server->seat->pointer_state.focused_surface;
-	if (view->xdg_surface->surface != focused_surface) {
-		/* Deny move/resize requests from unfocused clients. */
-		wlr_log(WLR_ERROR, "Error: view->xdg_surface->surface != focused_surface!");
-		return;
-	}
-	server->grabbed_view = view;
-	server->cursor_mode = mode;
-
-	if (mode == WOODLAND_CURSOR_MOVE) {
-		server->grab_x = ((server->cursor->x + server->pan_offset_x) / \
-											server->zoom_factor) - view->x;
-		server->grab_y = ((server->cursor->y + server->pan_offset_y) / \
-											server->zoom_factor) - view->y;
-	}
-	else if (mode == WOODLAND_CURSOR_RESIZE) {
-		struct wlr_box geo_box;
-		wlr_xdg_surface_get_geometry(view->xdg_surface, &geo_box);
-		double border_x = (view->x + geo_box.x) + ((edges & WLR_EDGE_RIGHT) ? geo_box.width : 0);
-		double border_y = (view->y + geo_box.y) + ((edges & WLR_EDGE_BOTTOM) ? geo_box.height : 0);
-		server->grab_x = ((server->cursor->x + server->pan_offset_x) / \
-											server->zoom_factor) - border_x;
-		server->grab_y = ((server->cursor->y + server->pan_offset_y) / \
-											server->zoom_factor) - border_y;
-		server->grab_geobox = geo_box;
-		server->grab_geobox.x += view->x;
-		server->grab_geobox.y += view->y;
-		server->resize_edges = edges;
-	}
+	wlr_xdg_toplevel_send_close(toplevel->xdg_toplevel);
 }
 
 static void xdg_toplevel_request_fullscreen(struct wl_listener *listener, void *data) {
-	struct wlr_xdg_toplevel_set_fullscreen_event *event = data;
-	struct woodland_view *view = wl_container_of(listener, view, request_fullscreen);
-
-	if (event->fullscreen) {
-		// Store the original size and position
-		view->original_x = view->x;
-		view->original_y = view->y;
-		view->original_width = view->xdg_surface->surface->current.width;
-		view->original_height = view->xdg_surface->surface->current.height;
-
-		// Set the view to fullscreen
-		wlr_log(WLR_INFO, "Setting view to fullscreen");
-		view->is_fullscreen = true;
-
-		// Get the output to fullscreen on
-		struct wlr_output *output = wlr_output_layout_output_at(view->server->output_layout,
-																view->server->cursor->x,
-																view->server->cursor->y);
-		if (!output) {
-			wlr_log(WLR_ERROR, "No output found for fullscreen");
-			return;
-		}
-
-		// Set the view position to (0, 0)
-		view->x = 0;
-		view->y = 0;
-
-		// Get the output's resolution and set the surface size
-		int width;
-		int height;
-		wlr_output_transformed_resolution(output, &width, &height);
-		wlr_xdg_toplevel_set_size(view->xdg_surface, width, height);
-
-		// Set the output mode to fullscreen
-		wlr_xdg_toplevel_set_fullscreen(view->xdg_surface, true);
-		if (view->foreign_toplevel) {
-			wlr_foreign_toplevel_handle_v1_set_fullscreen(view->foreign_toplevel, true);
-		}
-		wlr_output_commit(output);
-	}
-	else {
-		// Restore the original size and position
-		wlr_log(WLR_INFO, "Unsetting view from fullscreen");
-		view->is_fullscreen = false;
-
-		// Restore the original size and position
-		view->x = view->original_x;
-		view->y = view->original_y;
-		/* As much as i tried to avoid using magic numbers
-		 * i couldn't figure out why the window width was larger
-		 * on exiting the fullscreen mode, hence 'original_width - 30'
-		 */
-		wlr_xdg_toplevel_set_size(view->xdg_surface,
-								  (view->original_width - 33),
-								  view->original_height - 40);
-		wlr_xdg_toplevel_set_fullscreen(view->xdg_surface, false);
-		if (view->foreign_toplevel) {
-			wlr_foreign_toplevel_handle_v1_set_fullscreen(view->foreign_toplevel, false);
-		}
-	}
-
-	// Send a configure event to the client to apply the changes
-	wlr_xdg_surface_schedule_configure(view->xdg_surface);
-}
-
-static void xdg_toplevel_request_move(struct wl_listener *listener, void *data) {
 	(void)data;
-	/* This event is raised when a client would like to begin an interactive
-	 * move, typically because the user clicked on their client-side
-	 * decorations. Note that a more sophisticated compositor should check the
-	 * provided serial against a list of button press serials sent to this
-	 * client, to prevent the client from requesting this whenever they want. */
-	struct woodland_view *view = wl_container_of(listener, view, request_move);
-	if ((!view) || (view == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'view' in 'xdg_toplevel_request_move'!");
+	struct woodland_view *toplevel = wl_container_of(listener, toplevel, request_fullscreen);
+	struct woodland_server *server = toplevel->server;
+
+	if (!toplevel->xdg_toplevel->base->initialized) {
 		return;
 	}
-	begin_interactive(view, WOODLAND_CURSOR_MOVE, 0);
+
+	// Toggle fullscreen state
+	bool fullscreen = !toplevel->fullscreened;
+	toplevel->fullscreened = fullscreen;
+
+	if (fullscreen) {
+		// Save current geometry
+		toplevel->saved_geometry.x = toplevel->scene_tree->node.x;
+		toplevel->saved_geometry.y = toplevel->scene_tree->node.y;
+		toplevel->saved_geometry.width = toplevel->xdg_toplevel->current.width;
+		toplevel->saved_geometry.height = toplevel->xdg_toplevel->current.height;
+
+		// Set fullscreen state and new size
+		wlr_xdg_toplevel_set_fullscreen(toplevel->xdg_toplevel, true);
+		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+								server->transformed_width,
+								server->transformed_height);
+		wlr_scene_node_set_position(&toplevel->scene_tree->node, 0, 0);
+	}
+	else {
+		// Restore original state
+		wlr_xdg_toplevel_set_fullscreen(toplevel->xdg_toplevel, false);
+		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+								toplevel->saved_geometry.width,
+								toplevel->saved_geometry.height);
+		wlr_scene_node_set_position(&toplevel->scene_tree->node,
+									toplevel->saved_geometry.x,
+									toplevel->saved_geometry.y);
+	}
+
+	// Send configure event immediately
+	wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
+
+	// Force immediate redraw
+	struct woodland_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		wlr_scene_output_commit(output->scene_output, NULL);
+		struct timespec now;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		wlr_scene_output_send_frame_done(output->scene_output, &now);
+	}
+}
+
+static void xdg_toplevel_request_minimize(struct wl_listener *listener, void *data) {
+	struct wlr_xdg_toplevel_minimize_event *event = data;
+	(void)event;
+	struct woodland_view *toplevel = wl_container_of(listener, toplevel, request_minimize);
+	if (toplevel && !toplevel->minimized) {
+		///fprintf(stderr, "Minimizing toplevel\n");
+		// Hide from scene graph
+		wlr_scene_node_set_enabled(&toplevel->scene_tree->node, false);
+
+		// Mark as minimized
+		toplevel->minimized = true;
+	}
 }
 
 static void xdg_toplevel_request_resize(struct wl_listener *listener, void *data) {
@@ -2956,362 +2437,685 @@ static void xdg_toplevel_request_resize(struct wl_listener *listener, void *data
 	 * provided serial against a list of button press serials sent to this
 	 * client, to prevent the client from requesting this whenever they want. */
 	struct wlr_xdg_toplevel_resize_event *event = data;
-	if ((!event) || (event == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'event' is NULL in 'xdg_toplevel_request_resize'!");
-		return;
+	struct woodland_view *toplevel = wl_container_of(listener, toplevel, request_resize);
+
+	if (toplevel) {
+		// newly added
+		toplevel->resized = true;
+		toplevel->server->resize_edges = event->edges;
+		normalize_resize_edges(toplevel->server);
+		begin_interactive(toplevel, WOODLAND_CURSOR_RESIZE, toplevel->server->resize_edges);
 	}
-	struct woodland_view *view = wl_container_of(listener, view, request_resize);
-	if ((!view) || (view == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'view' in 'xdg_toplevel_request_resize'!");
-		return;
-	}
-	begin_interactive(view, WOODLAND_CURSOR_RESIZE, event->edges);
 }
 
-static void xdg_toplevel_request_minimize(struct wl_listener *listener, void *data) {
-	(void)listener;
+/* This event is raised when a client would like to begin an interactive
+ * move, typically because the user clicked on their client-side
+ * decorations. Note that a more sophisticated compositor should check the
+ * provided serial against a list of button press serials sent to this
+ * client, to prevent the client from requesting this whenever they want.
+ */
+static void xdg_toplevel_request_move(struct wl_listener *listener, void *data) {
 	(void)data;
-	struct woodland_view *view = wl_container_of(listener, view, request_minimize);
-	if ((!view) || (view == NULL)) {
-		wlr_log(WLR_ERROR, "Error: 'view' is NULL in 'xdg_toplevel_request_minimize'.");
-		return;
-	}
-	struct woodland_server *server = view->server;
-	struct wlr_output *output;
-	struct wlr_surface_output *surface_output;
-	wl_list_for_each(surface_output, &view->xdg_surface->surface->current_outputs, link) {
-		output = surface_output->output;
-		if (output) {
-			break;
-		}
-	}
-	// Remove the view from the list of active views
-	if (!wl_list_empty(&view->link)) {
-		wl_list_remove(&view->link);
-		// Add it to the list of minimized views
-		wl_list_insert(&server->minimized_views, &view->link);
-	}
-	// Unmap the surface to hide it
-	if (view->xdg_surface->mapped) {
-		wlr_surface_send_leave(view->xdg_surface->surface, output);
-		wl_signal_emit(&view->xdg_surface->events.unmap, &view->unmap);
-		wlr_xdg_surface_schedule_configure(view->xdg_surface);
-		if (view->foreign_toplevel) {
-			wlr_foreign_toplevel_handle_v1_set_minimized(view->foreign_toplevel, true);
-		}
-	}
-	// Optionally, you might want to call a render function to update the display
+	struct woodland_view *toplevel = wl_container_of(listener, toplevel, request_move);
+	begin_interactive(toplevel, WOODLAND_CURSOR_MOVE, 0);
 }
 
-static void server_new_xdg_surface(struct wl_listener *listener, void *data) {
-	wlr_log(WLR_INFO, "XDG new surface creating...");
-	/* This event is raised when wlr_xdg_shell receives a new xdg surface from a
-	 * client, either a toplevel (application window) or popup. */
-	struct wlr_xdg_surface *xdg_surface = data;
-	if ((!xdg_surface) || (xdg_surface == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'xdg_surface' in 'server_new_xdg_surface'!");
-		return;
-	}
-	struct woodland_server *server = wl_container_of(listener, server, new_xdg_surface);
-	if ((!server) || (server == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'server' in 'server_new_xdg_surface'!");
-		return;
-	}
-	struct wlr_output *output = wlr_output_layout_output_at(server->output_layout,
-																server->cursor->x,
-																server->cursor->y);
-	if ((!output) || (output == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'output' in 'server_new_xdg_surface'!");
-		return;
-	}
-
-	if (xdg_surface->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL) {
-		wlr_log(WLR_ERROR, "Current surface is not XDG toplevel.");
-		// Fix popups opening beyond output size
-		if (xdg_surface->role == WLR_XDG_SURFACE_ROLE_POPUP) {
-			wlr_log(WLR_INFO, "Creating new XDG Popup.");
-			struct wlr_box box;
-			box.x = 0;
-			box.y = 0;
-			box.width = output->width;
-			box.height = output->height;
-			wlr_xdg_popup_unconstrain_from_box(xdg_surface->popup, &box);
-		}
-		return;
-	}
-	/* Allocate a woodland_view for this surface */
-	struct woodland_view *view = calloc(1, sizeof(struct woodland_view));
-	if ((!view) || (view == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Failed to allocate memory in 'server_new_xdg_surface'!");
-		return;
-	}
-	view->server = server;
-	view->xdg_surface = xdg_surface;
-
-	wl_list_init(&view->map.link);
-	wl_list_init(&view->unmap.link);
-	wl_list_init(&view->destroy.link);
-	wl_list_init(&view->set_title.link);
-	wl_list_init(&view->set_app_id.link);
-	wl_list_init(&view->request_move.link);
-	wl_list_init(&view->request_resize.link);
-	wl_list_init(&view->request_minimize.link);
-	wl_list_init(&view->request_fullscreen.link);
-
-	/* Listen to the various events it can emit */
-	view->map.notify = xdg_surface_map;
-	wl_signal_add(&xdg_surface->events.map, &view->map);
-	view->unmap.notify = xdg_surface_unmap;
-	wl_signal_add(&xdg_surface->events.unmap, &view->unmap);
-	view->destroy.notify = _xdg_surface_destroy;
-	wl_signal_add(&xdg_surface->events.destroy, &view->destroy);
-	/* cotd */
-	struct wlr_xdg_toplevel *toplevel = xdg_surface->toplevel;
-	if ((!toplevel) || (toplevel == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'toplevel' in 'server_new_xdg_surface'!");
-		return;
-	}
-	view->set_title.notify = xdg_surface_set_title;
-	wl_signal_add(&toplevel->events.set_title, &view->set_title);
-	view->set_app_id.notify = xdg_surface_set_appid;
-	wl_signal_add(&toplevel->events.set_app_id, &view->set_app_id);
-	view->request_move.notify = xdg_toplevel_request_move;
-	wl_signal_add(&toplevel->events.request_move, &view->request_move);
-	view->request_resize.notify = xdg_toplevel_request_resize;
-	wl_signal_add(&toplevel->events.request_resize, &view->request_resize);
-	view->request_minimize.notify = xdg_toplevel_request_minimize;
-	wl_signal_add(&toplevel->events.request_minimize, &view->request_minimize);
-	view->request_fullscreen.notify = xdg_toplevel_request_fullscreen;
-	wl_signal_add(&toplevel->events.request_fullscreen, &view->request_fullscreen);
-
-	/* Add it to the list of views. */
-	wl_list_insert(&server->views, &view->link);
-	wlr_log(WLR_INFO, "XDG new surface created!");
-}
-
-/* Additional interfaces */
-/******************************* Layer Shell Protocol *******************************/
-static void arrange_layers(struct woodland_layer_view *layer_view,
-						   struct wlr_layer_surface_v1 *layer_surface,
-						   struct wlr_output *output,
-						   struct wlr_layer_surface_v1_state *state) {
-    if ((!layer_view) || (layer_view == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'layer_view' in 'arrange_layers'!");
-		return;
-	}
-	if ((!layer_surface) || (layer_surface == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'layer_surface' in 'arrange_layers'!");
-		return;
-	}
-	if ((!output) || (output == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'output' in 'arrange_layers'!");
-		return;
-	}
-    if ((!state) || (state == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'state' in 'arrange_layers'!");
-		return;
-	}
-	// Get the dimensions of the output
-	int x = 0;
-	int y = 0;
-	int output_width;
-	int output_height;
-	///int output_width = output->width;
-	///int output_height = output->height;
-    wlr_output_transformed_resolution(output, &output_width, &output_height);
-	// Calculate x position based on horizontal anchors
-	if (state->anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT) {
-		x = output_width - state->desired_width - state->margin.right;
-		///wlr_log(WLR_INFO, "Anchor right: x=%d", x);
-	}
-    else if (state->anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT) {
-		x = state->margin.left;
-		///wlr_log(WLR_INFO, "Anchor left: x=%d", x);
-	}
-	else {
-		x = (output_width - state->desired_width) / 2;
-		///wlr_log(WLR_INFO, "Anchor center (horizontal): x=%d", x);
-	}
-	// Calculate y position based on vertical anchors
-	if (state->anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM) {
-		y = output_height - (state->desired_height) - state->margin.bottom;
-		///wlr_log(WLR_INFO, "Anchor bottom: y=%d", y);
-	}
-    else if (state->anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP) {
-		y = state->margin.top;
-		///wlr_log(WLR_INFO, "Anchor top: y=%d", y);
-	}
-	else {
-		y = (output_height - state->desired_height) / 2;
-		///wlr_log(WLR_INFO, "Anchor center (vertical): y=%d", y);
-	}
-	// Assgning x and y coordinates for the surface
-	layer_view->x = x;
-	layer_view->y = y;
-	// This fixes slurp
-	if ((state->desired_width == 0) || (state->desired_height == 0)) {
-		state->desired_width = output_width;
-		state->desired_height = output_height;
-	}
-	wlr_layer_surface_v1_configure(layer_surface, state->desired_width, state->desired_height);
-}
-
-static void layer_surface_destroy(struct wl_listener *listener, void *data) {
+static void handle_toplevel_set_title(struct wl_listener *listener, void *data) {
 	(void)data;
-	(void)listener;
-    struct woodland_layer_view *layer_view = wl_container_of(listener, layer_view, destroy);
-    if ((!layer_view) || (layer_view == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'layer_view' in 'layer_surface_destroy'!");
-		return;
+	struct woodland_view *toplevel = wl_container_of(listener, toplevel, set_title);
+	///fprintf(stderr, "title: %s\n", view->xdg_toplevel->title);
+	// Set window title
+	if ((!toplevel->xdg_toplevel->title) || (toplevel->xdg_toplevel->title == NULL)) {
+		toplevel->xdg_toplevel->title = "nil";
 	}
-    if (!wl_list_empty(&layer_view->map.link)) {
-        wl_list_remove(&layer_view->map.link);
-    }
-    if (!wl_list_empty(&layer_view->unmap.link)) {
-        wl_list_remove(&layer_view->unmap.link);
-    }
-    if (!wl_list_empty(&layer_view->commit.link)) {
-        wl_list_remove(&layer_view->commit.link);
-    }
-    if (!wl_list_empty(&layer_view->destroy.link)) {
-        wl_list_remove(&layer_view->destroy.link);
-    }
-    if (!wl_list_empty(&layer_view->link)) {
-    	wl_list_remove(&layer_view->link);
-    }
-    if (layer_view) {
-    	free(layer_view);
-    	layer_view = NULL;
-    }
-	wlr_log(WLR_INFO, "Layer surface Destroyed!");
+	if (toplevel->foreign_handle && toplevel->xdg_toplevel->title) {
+		wlr_foreign_toplevel_handle_v1_set_title(toplevel->foreign_handle, toplevel->xdg_toplevel->title);
+	}
 }
 
-static void wlr_surface_commit(struct wl_listener *listener, void *data) {
+static void handle_toplevel_set_app_id(struct wl_listener *listener, void *data) {
 	(void)data;
-	(void)listener;
-    struct woodland_layer_view *layer_view = wl_container_of(listener, layer_view, commit);
-    if ((!layer_view) || (layer_view == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'layer_view' in 'wlr_surface_commit'!");
-		return;
+	struct woodland_view *toplevel = wl_container_of(listener, toplevel, set_app_id);
+	///fprintf(stderr, "app_id: %s\n", view->xdg_toplevel->app_id);
+	if ((!toplevel->xdg_toplevel->app_id) || (toplevel->xdg_toplevel->app_id == NULL)) {
+		toplevel->xdg_toplevel->app_id = "nil";
 	}
-    if (layer_view->layer_surface->current.committed) {
-    	arrange_layers(layer_view, layer_view->layer_surface, layer_view->layer_surface->output,
-															&layer_view->layer_surface->current);
-	    wlr_log(WLR_INFO, "Layer surface committed: %p", layer_view->layer_surface);
-    }
+	if (toplevel->foreign_handle && toplevel->xdg_toplevel->app_id) {
+		wlr_foreign_toplevel_handle_v1_set_app_id(toplevel->foreign_handle, toplevel->xdg_toplevel->app_id);
+	}
+	if (toplevel->xdg_toplevel->app_id) {
+		toplevel->app_id = strdup(toplevel->xdg_toplevel->app_id);
+	}
 }
 
-static void layer_surface_map(struct wl_listener *listener, void *data) {
+/**
+ * Handles the XDG toplevel map event.
+ * 
+ * This function is called when an XDG toplevel surface is mapped.
+ * It sets up the necessary state for the toplevel, including its position,
+ * foreign toplevel handle, and event listeners.
+ */
+static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 	(void)data;
-    struct woodland_layer_view *layer_view = wl_container_of(listener, layer_view, map);
-    if ((!layer_view) || (layer_view == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'layer_view' in 'layer_surface_map'!");
-		return;
-	}
-    layer_view->mapped = true;
-    wlr_log(WLR_INFO, "Layer surface mapped: %p", layer_view->layer_surface);
-}
+	// Get the toplevel and server from the listener
+	struct woodland_view *toplevel = wl_container_of(listener, toplevel, map);
+	struct woodland_server *server = toplevel->server;
 
-static void layer_surface_unmap(struct wl_listener *listener, void *data) {
-	(void)data;
-	///struct wlr_layer_surface_v1 *layer_surface = data;
-    struct woodland_layer_view *layer_view = wl_container_of(listener, layer_view, unmap);
-    if ((!layer_view) || (layer_view == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'layer_view' in 'layer_surface_unmap'!");
+	// Sanity check: Ensure this is an actual XDG toplevel before continuing
+	if (!toplevel->xdg_toplevel) {
+		wlr_log(WLR_ERROR, "xdg_toplevel_map: Skipping non-xdg_toplevel surface");
 		return;
 	}
-    layer_view->mapped = false;
-    wlr_log(WLR_INFO, "Layer surface unmapped: %p", data);
-}
 
-static void server_new_layer_surface(struct wl_listener *listener, void *data) {
-	struct wlr_layer_surface_v1 *layer_surface = data;
-    if ((!layer_surface) || (layer_surface == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'layer_surface' in 'server_new_layer_surface'!");
-		return;
-	}
-	wlr_log(WLR_INFO, "New layer surface created: %p", layer_surface);
-	struct woodland_server *server = wl_container_of(listener, server, new_layer_surface);
-    if ((!server) || (server == NULL)) {
-		wlr_log(WLR_ERROR, "Error: Empty 'server' in 'server_new_layer_surface'!");
-		return;
-	}
-	struct woodland_layer_view *layer_view = calloc(1, sizeof(struct woodland_layer_view));
-	if (!layer_view) {
-		wlr_log(WLR_ERROR, "Failed to allocate woodland_layer_view");
-		return;
-	}
-	// Initialize listener links to prevent double removal issues
-	layer_view->x = 0;
-	layer_view->y = 0;
-	layer_view->mapped = false;
-	layer_view->server = server;
-	layer_view->layer_surface = layer_surface;
-    if (!layer_surface->output) {
-		struct wlr_output *output = wlr_output_layout_output_at(layer_view->server->output_layout,
-																layer_view->server->cursor->x,
-																layer_view->server->cursor->y);
-		if (output) {
-			wlr_log(WLR_INFO, "Added output to layer surface: %p", layer_surface);
-			layer_surface->output = output;
-		}
-		else {
-			wlr_log(WLR_ERROR, "Failed to add output to layer surface: %p", layer_surface);
-			free(layer_view);
+	// Log the mapping of the XDG toplevel
+	wlr_log(WLR_DEBUG, "Mapping XDG Toplevel: %p (title: %s)", toplevel, toplevel->xdg_toplevel->title);
+
+	// Insert the toplevel into the list of managed windows
+	wl_list_insert(&server->toplevels, &toplevel->link);
+
+	// Create Foreign Toplevel Handle (Only if Foreign Toplevel Management is active)
+	if (server->toplevel_manager) {
+		// Create a new foreign toplevel handle
+		toplevel->foreign_handle = wlr_foreign_toplevel_handle_v1_create(server->toplevel_manager);
+		if (!toplevel->foreign_handle) {
+			wlr_log(WLR_ERROR, "Failed to create foreign toplevel handle");
+			// Remove the toplevel from the list of managed windows
+			WL_LIST_SAFE_REMOVE(&toplevel->link);
 			return;
 		}
+
+		// Set window properties
+		if (toplevel->xdg_toplevel->title) {
+			wlr_foreign_toplevel_handle_v1_set_title(toplevel->foreign_handle,
+													 toplevel->xdg_toplevel->title);
+		}
+		if (toplevel->xdg_toplevel->app_id) {
+			wlr_foreign_toplevel_handle_v1_set_app_id(toplevel->foreign_handle,
+													toplevel->xdg_toplevel->app_id);
+		}
+
 	}
-	// Set up listeners for the layer surface signals	wl_list_init(&layer_view->map.link);
-	wl_list_init(&layer_view->map.link);
-	wl_list_init(&layer_view->unmap.link);
-	wl_list_init(&layer_view->commit.link);
-	wl_list_init(&layer_view->destroy.link);
-	layer_view->commit.notify = wlr_surface_commit;
-	wl_signal_add(&layer_surface->surface->events.commit, &layer_view->commit);
-	layer_view->map.notify = layer_surface_map;
-	wl_signal_add(&layer_surface->events.map, &layer_view->map);
-	layer_view->unmap.notify = layer_surface_unmap;
-	wl_signal_add(&layer_surface->events.unmap, &layer_view->unmap);
-	layer_view->destroy.notify = layer_surface_destroy;
-	wl_signal_add(&layer_surface->events.destroy, &layer_view->destroy);
+	else {
+		wlr_log(WLR_DEBUG, "Skipping foreign toplevel handle creation (manager not initialized)");
+	}
 
-	wl_list_insert(&server->layer_surfaces, &layer_view->link);
+	// Assign window to output
+	struct wlr_output *output = wlr_output_layout_output_at(server->output_layout,
+															toplevel->scene_tree->node.x,
+															toplevel->scene_tree->node.y
+	);
+	if (output) {
+		// Enter the output for the foreign toplevel handle
+		if (toplevel->foreign_handle) {
+			wlr_foreign_toplevel_handle_v1_output_enter(toplevel->foreign_handle, output);
+		}
 
-	arrange_layers(layer_view, layer_surface, layer_surface->output, &layer_surface->current);
-	wlr_log(WLR_INFO, "Layer surface configured: %p", layer_surface);
+		// Default placement
+		// Get the output's layout
+		struct wlr_box output_box;
+		wlr_output_layout_get_box(server->output_layout, NULL, &output_box);
+
+		// Get the transformed resolution of the output
+		///int width = output_box.width;
+		///int height = output_box.height;
+
+		// Get only transformed resolution because when scaling is applied
+		// all newly opened applications are being resized
+		int width = server->transformed_width;
+		int height = server->transformed_height;
+
+		// Calculate the position to center the window
+		struct wlr_box *geo = &toplevel->xdg_toplevel->base->current.geometry;
+		int window_width = geo->width;
+		int window_height = geo->height;
+
+		double x = 0;
+		double y = 0;
+		if (window_width == 0 || window_height == 0) {
+			// Use a default size for windows with width = 0 and height = 0 geometry
+			window_width = 700; // Magic number to place the window right in the center
+			window_height = 300;
+			x = output_box.x + (width / 2.0) - (window_width / 2.0);
+			y = output_box.y + (height / 2.0) - (window_height / 2.0);
+		}
+		else {
+			// Default center placement for other normal windows
+			x = output_box.x + (width / 2.0) - (window_width / 2.0);
+			y = output_box.y + (height / 2.0) - (window_height / 2.0);
+		}
+
+		// If the window width or height exceeds the screen geometry then resize to fit the screen	
+		struct wlr_box *geo_box = &toplevel->xdg_toplevel->base->current.geometry;;
+		if (geo_box->width > output->width) {
+			wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, output->width, geo_box->height);
+		}
+		if (geo_box->height > output->height) {
+			wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, geo_box->width, output->height);
+		}
+
+		// Set the new window position
+		wlr_scene_node_set_position(&toplevel->scene_tree->node, (int)round(x), (int)round(y));
+
+		// ******************* automatic window placement ******************* //
+		// Get the scene node for the view
+		struct wlr_scene_node *node = &toplevel->scene_tree->node;
+
+		// Executing window placement
+		const char *title = NULL;
+		const char *app_id = NULL;
+		title = toplevel->xdg_toplevel->title;
+		if ((!title) || (title == NULL)) {
+			title = "nil";
+		}
+		app_id = toplevel->xdg_toplevel->app_id;
+		if ((!app_id) || (app_id == NULL)) {
+			app_id = "nil";
+		}
+
+		// Executing window placement
+		char *ids[1024] = {0};
+		char *identifiers[1024] = {0};
+		int x_arr[1024] = {0};
+		int y_arr[1024] = {0};
+
+		// Gets all the titles or app_id of windows in woodland.ini marked for user defined placement
+		// ids - is a char array containing the prefixes keywords (either keyword 'title:' or 'app_id:'
+		// identifiers - is a char array containing the actual window title or app_id
+		// x_arr and y_arr - char arrays containing x and y coordinates of windows to be placed
+		get_window_placement(toplevel->server->config, ids, identifiers, x_arr, y_arr);
+
+		// If 'surface->current.committed' == WLR_SURFACE_STATE_BUFFER it lets us know that
+		// the client required a toplevel move or resize and we can use this information
+		// to filter which windows should be let to use the client required coordinates
+		// and which windows should be always placed in center.
+		bool clientRequiredPlacement = false;
+		if (toplevel->xdg_toplevel->base->surface->current.committed == WLR_SURFACE_STATE_BUFFER) {
+			clientRequiredPlacement = true;
+		}
+
+		if (title != NULL && app_id == NULL) {
+			for (int i = 0; i < 1024 && ids[i] != NULL; i++) {
+				if (strcmp(ids[i], "title:") == 0) {
+				    // If this title is found in woodland.ini for automatic placement
+				    if (strcmp(identifiers[i], title) == 0) {
+				        wlr_scene_node_set_position(node, x_arr[i], y_arr[i]);
+				        break;
+				    }
+				    if (strcmp(identifiers[i], title) != 0 && clientRequiredPlacement && \
+				                                        geo_box->x != 0 && geo_box->y != 0) {
+				        wlr_scene_node_set_position(node, geo_box->x, geo_box->y);
+				        break;
+				    }
+				}
+				// Free resources
+				if (ids[i] != NULL) {
+				    free(ids[i]);
+				    ids[i] = NULL;
+				}
+				if (identifiers[i] != NULL) {
+				    free(identifiers[i]);
+				    identifiers[i] = NULL;
+				}
+			}
+		}
+		else if (title == NULL && app_id != NULL) {
+			for (int i = 0; i < 1024 && ids[i] != NULL; i++) {
+				if (strcmp(ids[i], "app_id:") == 0) {
+				    if (strcmp(identifiers[i], app_id) == 0) {
+				        wlr_scene_node_set_position(node, x_arr[i], y_arr[i]);
+				        break;
+				    }
+				    if (strcmp(identifiers[i], app_id) != 0 && clientRequiredPlacement && \
+				                                        geo_box->x != 0 && geo_box->y != 0) {
+				        wlr_scene_node_set_position(node, geo_box->x, geo_box->y);
+				        break;
+				    }
+				}
+				// Free resources
+				if (ids[i] != NULL) {
+				    free(ids[i]);
+				    ids[i] = NULL;
+				}
+				if (identifiers[i] != NULL) {
+				    free(identifiers[i]);
+				    identifiers[i] = NULL;
+				}
+			}
+		}
+		else if (title != NULL && app_id != NULL) {
+			for (int i = 0; i < 1024 && ids[i] != NULL; i++) {
+				// Set position for windows titles
+				if (strcmp(ids[i], "app_id:") == 0) {
+				    if (strcmp(identifiers[i], app_id) == 0) {
+				        wlr_scene_node_set_position(node, x_arr[i], y_arr[i]);
+				        break;
+				    }
+				    if (strcmp(identifiers[i], app_id) != 0 && clientRequiredPlacement && \
+				                                        geo_box->x != 0 && geo_box->y != 0) {
+				        wlr_scene_node_set_position(node, geo_box->x, geo_box->y);
+				        break;
+				    }
+				}
+				else if (strcmp(ids[i], "title:") == 0) {
+				    if (strcmp(identifiers[i], title) == 0) {
+				        wlr_scene_node_set_position(node, x_arr[i], y_arr[i]);
+				        break;
+				    }
+				    if (strcmp(identifiers[i], title) != 0 && clientRequiredPlacement && \
+				                                        geo_box->x != 0 && geo_box->y != 0) {
+				        wlr_scene_node_set_position(node, geo_box->x, geo_box->y);
+				        break;
+				    }
+				}
+				// Free resources
+				if (ids[i] != NULL) {
+				    free(ids[i]);
+				    ids[i] = NULL;
+				}
+				if (identifiers[i] != NULL) {
+				    free(identifiers[i]);
+				    identifiers[i] = NULL;
+				}
+			}
+		}
+		// ******************* Finished automatic window placement ******************* //
+		// Finalize window creation
+		wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
+
+		// Initialize listeners
+		toplevel->request_activate.notify = handle_activate;
+		wl_signal_add(&toplevel->foreign_handle->events.request_activate, &toplevel->request_activate);
+
+		toplevel->request_close.notify = handle_close;
+		wl_signal_add(&toplevel->foreign_handle->events.request_close, &toplevel->request_close);
+
+		// Set the toplevel as resizing as a workaround for scale modifying the size of some toplevels
+		wlr_xdg_toplevel_set_resizing(toplevel->xdg_toplevel, true);
+
+		// Focus the toplevel
+		focus_toplevel(toplevel);
+	}
+	else {
+		wlr_log(WLR_ERROR, "xdg_toplevel_map: Failed to assign output for %s", toplevel->xdg_toplevel->title);
+		// Remove the toplevel from the list of managed windows
+		WL_LIST_SAFE_REMOVE(&toplevel->link);
+		if (toplevel->foreign_handle) {
+			wlr_foreign_toplevel_handle_v1_destroy(toplevel->foreign_handle);
+			toplevel->foreign_handle = NULL;
+		}
+	}
 }
 
-/* Set background image function */
-static int set_background_image_func(void *data) {
-	struct woodland_server *server = data;
-	if (!server) {
-		wlr_log(WLR_ERROR, "Failed to get woodland_server!");
-		return 1;
+static void xdg_toplevel_unmap(struct wl_listener *listener, void *data) {
+	(void)data;
+	struct woodland_view *toplevel = wl_container_of(listener, toplevel, unmap);
+	struct woodland_server *server = toplevel->server;
+	toplevel->minimized = false;
+
+	// Remove from list first to prevent re-tiling logic from seeing this window
+	WL_LIST_SAFE_REMOVE(&toplevel->link);
+
+	if (toplevel->foreign_handle) {
+		// Remove listeners first to prevent dangling pointers
+		WL_LIST_SAFE_REMOVE(&toplevel->request_activate.link);
+		WL_LIST_SAFE_REMOVE(&toplevel->request_close.link);
+		
+		// Destroy the foreign toplevel handle
+		wlr_foreign_toplevel_handle_v1_destroy(toplevel->foreign_handle);
+		toplevel->foreign_handle = NULL;
+		toplevel->foreign_handle = NULL; // Critical NULL assignment
 	}
-	int width;
-	int height;
-	int channels;
-	char *background_img = get_char_value_from_conf(server->config, "background");
-	unsigned char *pixels = stbi_load(background_img, &width, &height, &channels, STBI_rgb_alpha);
-	if (!pixels) {
-		wlr_log(WLR_ERROR, "No background image provided or Failed to load: %s", background_img);
-		return 1;
+
+	struct wlr_box layout_box;
+	wlr_output_layout_get_box(server->output_layout, NULL, &layout_box);
+
+	int window_count = 0;
+	struct woodland_view *win;
+	wl_list_for_each(win, &server->toplevels, link) window_count++;
+
+	struct woodland_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		wlr_scene_output_commit(output->scene_output, NULL);
 	}
-	server->background_texture = wlr_texture_from_pixels(server->renderer,
-														DRM_FORMAT_ABGR8888,
-														width * 4,
-														width,
-														height,
-														pixels);
-	stbi_image_free(pixels);
-	free(background_img);
-	background_img = NULL;
-	if (!server->background_texture) {
-		wlr_log(WLR_ERROR, "Failed to create texture from image: %s", background_img);
-		return 1;
+
+	//error-chance, z-added
+	if (toplevel == server->grabbed_toplevel) {
+		reset_cursor_mode(server);
 	}
-	wl_event_source_remove(server->timer);
-	return 0;
+}
+
+static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
+	/* Called when a new surface state is committed. */
+	(void)data;
+	struct woodland_view *toplevel = wl_container_of(listener, toplevel, commit);
+
+	if (toplevel->xdg_toplevel->base->initial_commit) {
+		/* When an xdg_surface performs an initial commit, the compositor must
+		 * reply with a configure so the client can map the surface. Woodland
+		 * configures the first time opened xdg_toplevel with 0,0 size to let
+		 * the client pick the dimensions itself or if the toplevel has been
+		 * previously opened then it applies the last time saved width and height. */
+		///wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, 0, 0);
+		char app_id_width[128];
+		char app_id_height[128];
+		snprintf(app_id_width, sizeof(app_id_width), "%s_width", toplevel->app_id);
+		snprintf(app_id_height, sizeof(app_id_height), "%s_height", toplevel->app_id);
+		///fprintf(stderr, "app_id_width: %s\n", app_id_width);
+		///fprintf(stderr, "app_id_height: %s\n", app_id_height);
+		int LastToplevelWidth = get_int_value_from_conf(toplevel->server->config_sizes, app_id_width);
+		int LastToplevelHeight = get_int_value_from_conf(toplevel->server->config_sizes, app_id_height);
+
+		/* If the toplevel is firt time opened then it has no records in 'windows_sizes.db
+		 * and 'get_int_value_from_conf' will not find its app_id and will return 1
+		 * wrongly applying width = 1 and height = 1, that's why we need to set all
+		 * the initial first time opened toplevels width and height to 0. Setting it
+		 * to 0 let's the toplevels apply their own size. */
+		if (LastToplevelWidth == 1) {
+			LastToplevelWidth = 0;
+		}
+		if (LastToplevelHeight == 1) {
+			LastToplevelHeight = 0;
+		}
+
+		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, LastToplevelWidth, LastToplevelHeight);
+
+		// Set the toplevel as resizing as a workaround for scale modifying the size of some toplevels
+		wlr_xdg_toplevel_set_resizing(toplevel->xdg_toplevel, true);
+	}
+}
+
+/**
+ * Called when an xdg_toplevel is destroyed.
+ *
+ * This function handles the cleanup and focuses the previous toplevel in the stack.
+ */
+static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
+	// Ignore the data parameter
+	(void)data;
+	// Get the woodland_view associated with the listener
+	if (!listener) {
+		wlr_log(WLR_ERROR, "Invalid listener in xdg_toplevel_destroy");
+		return;
+	}
+
+	struct woodland_view *toplevel = wl_container_of(listener, toplevel, destroy);
+	if (!toplevel) {
+		wlr_log(WLR_ERROR, "Failed to get woodland_view from listener");
+		return;
+	}
+
+	// Check if the toplevel has a valid server
+	if (!toplevel->server) {
+		wlr_log(WLR_ERROR, "Toplevel has no valid server");
+		return;
+	}
+
+	// Save toplevel size before closing
+	struct wlr_box toplevel_box;
+	wlr_xdg_surface_get_geometry(toplevel->xdg_toplevel->base, &toplevel_box);
+	///fprintf(stderr, "%s_width = %d\n", toplevel->app_id, toplevel_box.width);
+	///fprintf(stderr, "%s_height = %d\n", toplevel->app_id, toplevel_box.height);
+
+	// First check is there is any change in this toplevel size since last time
+	bool WriteNewSizes = false;
+	char app_id_width[128];
+	char app_id_height[128];
+	snprintf(app_id_width, sizeof(app_id_width), "%s_width", toplevel->app_id);
+	snprintf(app_id_height, sizeof(app_id_height), "%s_height", toplevel->app_id);
+	///fprintf(stderr, "app_id_width: %s\n", app_id_width);
+	///fprintf(stderr, "app_id_height: %s\n", app_id_height);
+	int LastToplevelWidth = get_int_value_from_conf(toplevel->server->config_sizes, app_id_width);
+	int LastToplevelHeight = get_int_value_from_conf(toplevel->server->config_sizes, app_id_height);
+	///fprintf(stderr, "LastToplevelWidth: %d\n", LastToplevelWidth);
+	///fprintf(stderr, "LastToplevelHeight: %d\n", LastToplevelHeight);
+
+	// If there are any size changes then remove those old lines
+	if ((LastToplevelWidth != toplevel_box.width) || (LastToplevelHeight != toplevel_box.height)) {
+		fprintf(stderr, "New toplevel size doesn't match the last saved size, removing old lines.\n");
+		if (toplevel->resized) {
+			WriteNewSizes = true;
+			remove_given_text_line_from_conf(toplevel->server->config_sizes, app_id_width);
+			remove_given_text_line_from_conf(toplevel->server->config_sizes, app_id_height);
+		}
+	}
+	else {
+		fprintf(stderr, "New toplevel size matches the last saved size, skipping.\n");
+		WriteNewSizes = false;
+	}
+
+	// And now get new size values
+	if (toplevel->resized && WriteNewSizes) {
+		fprintf(stderr, "Writing new sizes for: %s to config.\n", toplevel->app_id);
+		// write toplevel width to server.config_sizes
+		FILE *config_winsizes = fopen(toplevel->server->config_sizes, "a+");
+		if (config_winsizes == NULL) {
+			perror("fopen");
+			return;
+		}
+		///fprintf(config_winsizes, "%s_width = %d\n", toplevel->app_id, toplevel_box.width);
+
+		// write toplevel height to server.config_sizes
+		///fprintf(config_winsizes, "%s_height = %d\n", toplevel->app_id, toplevel_box.height);
+		fclose(config_winsizes);
+	}
+	// Find the previous view to focus
+	bool focus_surface = false;
+	struct woodland_view *prev_view = NULL;
+	if (!wl_list_empty(&toplevel->server->toplevels)) {
+		struct woodland_view *iter;
+		wl_list_for_each_reverse(iter, &toplevel->server->toplevels, link) {
+			// Skip the current toplevel and check for NULL
+			if (iter && iter != toplevel) {
+				prev_view = iter;
+			}
+		}
+	}
+
+	if (prev_view && prev_view != toplevel) {
+		struct wlr_surface *prev_surface = prev_view->xdg_toplevel->base->surface;
+		if (prev_surface && prev_surface != toplevel->xdg_toplevel->base->surface) {
+			focus_surface = true;
+		}
+	}
+
+	// Check if we found a valid previous view
+	if (focus_surface && prev_view && \
+		prev_view != toplevel && \
+		prev_view->xdg_toplevel && \
+		prev_view->xdg_toplevel->base) {
+		// Check if the previous view has a valid surface
+		struct wlr_surface *prev_surface = prev_view->xdg_toplevel->base->surface;
+		if (prev_surface && prev_surface != toplevel->xdg_toplevel->base->surface) {
+			// Focus the previous surface
+			wlr_log(WLR_INFO, "Activating previous surface: %p", prev_view->xdg_toplevel->base);
+			focus_toplevel(prev_view);
+		}
+		else {
+			wlr_log(WLR_ERROR, "Previous surface is not valid");
+		}
+	}
+	else {
+		wlr_log(WLR_INFO, "No previous surface to focus");
+	}
+	if (toplevel->app_id) {
+		free(toplevel->app_id);
+		toplevel->app_id = NULL;
+	}
+	// Remove the toplevel from all the lists
+	WL_LIST_SAFE_REMOVE(&toplevel->map.link);
+	WL_LIST_SAFE_REMOVE(&toplevel->unmap.link);
+	WL_LIST_SAFE_REMOVE(&toplevel->commit.link);
+	WL_LIST_SAFE_REMOVE(&toplevel->destroy.link);
+	WL_LIST_SAFE_REMOVE(&toplevel->set_title.link);
+	WL_LIST_SAFE_REMOVE(&toplevel->set_app_id.link);
+	WL_LIST_SAFE_REMOVE(&toplevel->request_move.link);
+	WL_LIST_SAFE_REMOVE(&toplevel->request_resize.link);
+	WL_LIST_SAFE_REMOVE(&toplevel->request_minimize.link);
+	WL_LIST_SAFE_REMOVE(&toplevel->request_fullscreen.link);
+	// Free the toplevel
+	if (toplevel) {
+		free(toplevel);
+		toplevel = NULL;
+	}
+	wlr_log(WLR_INFO, "XDG Toplevel destroyed successfully!");
+}
+
+/**
+ * Called when an xdg_toplevel is created.
+ *
+ * Whenever user launches a new application, this function is called.
+ */
+static void server_new_xdg_toplevel(struct wl_listener *listener, void *data) {
+	/* This event is raised when a client creates a new toplevel (application window). */
+	(void)data;
+	struct woodland_server *server = wl_container_of(listener, server, new_xdg_toplevel);
+	struct wlr_xdg_toplevel *xdg_toplevel = data;
+
+	/* Allocate a woodland_view for this surface */
+	struct woodland_view *toplevel = calloc(1, sizeof(*toplevel));
+	toplevel->server = server;
+	toplevel->xdg_toplevel = xdg_toplevel;
+	toplevel->scene_tree = wlr_scene_xdg_surface_create(&toplevel->server->scene->tree, xdg_toplevel->base);
+	toplevel->scene_tree->node.data = toplevel;
+	xdg_toplevel->base->data = toplevel->scene_tree;
+
+	/* Listen to the various events it can emit */
+	toplevel->map.notify = xdg_toplevel_map;
+	wl_signal_add(&xdg_toplevel->base->surface->events.map, &toplevel->map);
+	toplevel->unmap.notify = xdg_toplevel_unmap;
+	wl_signal_add(&xdg_toplevel->base->surface->events.unmap, &toplevel->unmap);
+	toplevel->commit.notify = xdg_toplevel_commit;
+	wl_signal_add(&xdg_toplevel->base->surface->events.commit, &toplevel->commit);
+
+	toplevel->request_resize.notify = xdg_toplevel_request_resize;
+	wl_signal_add(&xdg_toplevel->events.request_resize, &toplevel->request_resize);
+
+	toplevel->request_minimize.notify = xdg_toplevel_request_minimize;
+	wl_signal_add(&xdg_toplevel->events.request_minimize, &toplevel->request_minimize);
+
+	toplevel->request_fullscreen.notify = xdg_toplevel_request_fullscreen;
+	wl_signal_add(&xdg_toplevel->events.request_fullscreen, &toplevel->request_fullscreen);
+
+	toplevel->request_move.notify = xdg_toplevel_request_move;
+	wl_signal_add(&xdg_toplevel->events.request_move, &toplevel->request_move);
+
+	toplevel->destroy.notify = xdg_toplevel_destroy;
+	wl_signal_add(&xdg_toplevel->events.destroy, &toplevel->destroy);
+
+	// Add listeners for set_title and set_app_id events
+	toplevel->set_title.notify = handle_toplevel_set_title;
+	wl_signal_add(&xdg_toplevel->events.set_title, &toplevel->set_title);
+
+	toplevel->set_app_id.notify = handle_toplevel_set_app_id;
+	wl_signal_add(&xdg_toplevel->events.set_app_id, &toplevel->set_app_id);
+}
+
+ /**
+ * XDG Popup management
+ */
+static void xdg_popup_commit(struct wl_listener *listener, void *data) {
+	/* Called when a new surface state is committed. */
+	(void)data;
+	struct woodland_popup *popup = wl_container_of(listener, popup, commit);
+
+	if (popup->xdg_popup->base->initial_commit) {
+		/* When an xdg_surface performs an initial commit, the compositor must
+		 * reply with a configure so the client can map the surface.
+		 * tinywl sends an empty configure. A more sophisticated compositor
+		 * might change an xdg_popup's geometry to ensure it's not positioned
+		 * off-screen, for example. */
+		wlr_xdg_surface_schedule_configure(popup->xdg_popup->base);
+	}
+}
+
+static void xdg_popup_destroy(struct wl_listener *listener, void *data) {
+	/* Called when the xdg_popup is destroyed. */
+	(void)data;
+	struct woodland_popup *popup = wl_container_of(listener, popup, destroy);
+	WL_LIST_SAFE_REMOVE(&popup->commit.link);
+	WL_LIST_SAFE_REMOVE(&popup->destroy.link);
+	free(popup);
+}
+
+/* We must add xdg popups to the scene graph so they get rendered. The
+ * wlroots scene graph provides a helper for this, but to use it we must
+ * provide the proper parent scene node of the xdg popup. To enable this,
+ * we always set the user data field of xdg_surfaces to the corresponding
+ * scene node.
+ */
+static void server_new_xdg_popup(struct wl_listener *listener, void *data) {
+	// Check for NULL listener and data
+	if (!listener || !data) {
+		return;
+	}
+
+	// This event is raised when a client creates a new popup.
+	struct wlr_xdg_popup *xdg_popup = data;
+	struct woodland_server *server = wl_container_of(listener, server, new_xdg_popup);
+
+	// Check if server or xdg_popup is NULL
+	if (!server || !xdg_popup) {
+		return;
+	}
+
+	// Allocate memory for the new popup
+	struct woodland_popup *popup = calloc(1, sizeof(*popup));
+	if (!popup) {
+		// Handle memory allocation failure
+		return;
+	}
+
+	popup->xdg_popup = xdg_popup;
+
+	// Get the parent surface and its scene tree
+	struct wlr_xdg_surface *parent = wlr_xdg_surface_try_from_wlr_surface(xdg_popup->parent);
+	if (!parent) {
+		free(popup);
+		return;
+	}
+
+	struct wlr_scene_tree *parent_tree = parent->data;
+	if (!parent_tree) {
+		free(popup);
+		return;
+	}
+
+	// Create a new scene surface for the popup
+	xdg_popup->base->data = wlr_scene_xdg_surface_create(parent_tree, xdg_popup->base);
+	if (!xdg_popup->base->data) {
+		free(popup);
+		return;
+	}
+
+	// Calculate screen coordinates and place popups within screen resolution
+	// and prevent popups to go beyond screen boundaries
+	struct wlr_output *output = wlr_output_layout_output_at(server->output_layout,
+															server->cursor->x,
+															server->cursor->y);
+
+	if (output) {
+		///struct wlr_box output_box;
+		///wlr_output_layout_get_box(server->output_layout, output, &output_box);
+		int width = server->transformed_width;
+		int height = server->transformed_height;
+
+		struct wlr_box box;
+		box.x = 0;
+		box.y = 0;
+		box.width = width;
+		box.height = height;
+		///box.width = output_box.width;
+		///box.height = output_box.height;
+		wlr_xdg_popup_unconstrain_from_box(xdg_popup, &box);
+	}
+
+	// Add commit signal handler
+	popup->commit.notify = xdg_popup_commit;
+	wl_signal_add(&xdg_popup->base->surface->events.commit, &popup->commit);
+
+	// Add destroy signal handler
+	popup->destroy.notify = xdg_popup_destroy;
+	wl_signal_add(&xdg_popup->events.destroy, &popup->destroy);
 }
 
 /* Run a terminal at startup of no startup command specified */
@@ -3407,14 +3211,109 @@ static int process_startup_commands(void *data) {
 		}
 	}
 	wl_event_source_remove(server->autostart_timer);
+
+	// If compositor is shut down sooner than 7 seconds then remove this timer
+	server->autostart_cmd_ran = true;
 	return 0;
 }
 
-/* Main function */
+/* Background picture setup */
+static void background_setup(struct woodland_server *server,
+							struct wlr_output *output,
+							char **background_img) {
+	// Display the background picture
+	int channels = 0;
+	int output_width = server->transformed_width;
+	int output_height = server->transformed_height;
+
+	if (!output) {
+		wlr_log(WLR_ERROR, "Failed to get output at cursor position");
+		return;
+	}
+
+	struct wlr_drm_format format = {
+		.format = DRM_FORMAT_ARGB8888,
+		.len = 1,
+		.capacity = 1,
+		.modifiers = (uint64_t[]) { DRM_FORMAT_MOD_LINEAR },
+	};
+
+	struct wlr_buffer *wlr_buffer = wlr_allocator_create_buffer(server->allocator,
+			                                                   output_width,
+			                                                   output_height,
+			                                                   &format);
+	if (!wlr_buffer) {
+		wlr_log(WLR_ERROR, "Failed to create buffer");
+		free(*background_img);
+		*background_img = NULL;
+		return;
+	}
+
+	server->background_scene_buffer = wlr_scene_buffer_create(&server->scene->tree, wlr_buffer);
+	if (!server->background_scene_buffer) {
+		wlr_log(WLR_ERROR, "Failed to create scene buffer");
+		wlr_buffer_drop(wlr_buffer);
+		free(*background_img);
+		*background_img = NULL;
+		return;
+	}
+
+	struct wlr_scene_output *scene_output = wlr_scene_get_scene_output(server->scene, output);
+	if (!scene_output) {
+		wlr_log(WLR_ERROR, "Failed to get scene output");
+		wlr_buffer_drop(wlr_buffer);
+		free(*background_img);
+		*background_img = NULL;
+		return;
+	}
+
+	unsigned char *pixels = stbi_load(*background_img,
+									&output_width,
+									&output_height,
+									&channels,
+									STBI_rgb_alpha);
+	if (!pixels) {
+		wlr_log(WLR_ERROR, "Failed to load background image: %s", background_img);
+		wlr_buffer_drop(wlr_buffer);
+		free(*background_img);
+		*background_img = NULL;
+		return;
+	}
+
+	if (channels != 4) {
+		wlr_log(WLR_ERROR, "Background image doesn't have alpha channel");
+	}
+
+	server->background_scene_buffer->texture = wlr_texture_from_pixels(server->renderer,
+																		DRM_FORMAT_ABGR8888,
+																		output_width * 4,
+																		output_width,
+																		output_height,
+																		pixels);
+
+	if (!server->background_scene_buffer->texture) {
+		wlr_log(WLR_ERROR, "Failed to create texture from pixels");
+		wlr_buffer_drop(wlr_buffer);
+		stbi_image_free(pixels);
+		free(*background_img);
+		*background_img = NULL;
+		return;
+	}
+
+	stbi_image_free(pixels);
+	wlr_buffer_drop(wlr_buffer);
+	free(*background_img);
+	*background_img = NULL;
+}
+
+/**
+ ******************** Main function ********************
+ */
 int main(int argc, char *argv[]) {
 	wlr_log_init(WLR_DEBUG, NULL);
 	// Create initial configuration files
 	create_config();
+
 	// Declaring variables
 	char *startup_cmd = NULL;
 	int c;
@@ -3447,346 +3346,184 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 	snprintf(server.config, strlen(HOME) + strlen(configPath) + 3, "%s%s", HOME, configPath);
+
+	const char *configSizesPath = "/.config/woodland/windows_sizes.db";
+	server.config_sizes = malloc(sizeof(char) * strlen(HOME) + strlen(configSizesPath) + 3);
+	if (server.config_sizes == NULL) {
+		wlr_log(WLR_ERROR, "Failed to allocate memory for config sizes path.\n");
+		return 1;
+	}
+	snprintf(server.config_sizes, strlen(HOME) + strlen(configSizesPath) + 3, "%s%s", HOME, configSizesPath);
+
+	const char *IconsPath = "/.config/woodland/icons";
+
+	/// getting icons
+	server.volumeHigh = malloc((sizeof(char) * strlen(HOME)) +
+					(sizeof(char) * strlen(IconsPath)) +
+					(sizeof(char) * strlen("dio-volume-high.svg") + 3));
+	snprintf(server.volumeHigh, (sizeof(char) * strlen(HOME)) +
+					(sizeof(char) * strlen(IconsPath)) +
+					(sizeof(char) * strlen("dio-volume-high.svg") + 3),
+					"%s%s/%s",
+					HOME,
+					IconsPath,
+					"dio-volume-high.svg");
+	if (!server.volumeHigh) {
+		perror("dio-volume-high.svg");
+	}
+
+	server.brightnessIcon = malloc((sizeof(char) * strlen(HOME)) +
+					(sizeof(char) * strlen(IconsPath)) +
+					(sizeof(char) * strlen("dio-volume-high.svg") + 3));
+	snprintf(server.brightnessIcon, (sizeof(char) * strlen(HOME)) +
+					(sizeof(char) * strlen(IconsPath)) +
+					(sizeof(char) * strlen("brightness.svg") + 3),
+					"%s%s/%s",
+					HOME,
+					IconsPath,
+					"brightness.svg");
+	if (!server.brightnessIcon) {
+		perror("brightness.svg");
+	}
+
+	server.networkIcon = malloc((sizeof(char) * strlen(HOME)) +
+					(sizeof(char) * strlen(IconsPath)) +
+					(sizeof(char) * strlen("dio-volume-high.svg") + 3));
+	snprintf(server.networkIcon, (sizeof(char) * strlen(HOME)) +
+					(sizeof(char) * strlen(IconsPath)) +
+					(sizeof(char) * strlen("network.svg") + 3),
+					"%s%s/%s",
+					HOME,
+					IconsPath,
+					"network.svg");
+	if (!server.networkIcon) {
+		perror("network.svg");
+	}
+
+	server.tap_enable = get_char_value_from_conf(server.config, "tap_to_click");
 	server.play_pause = get_char_value_from_conf(server.config, "play_pause");
 	server.volume_up = get_char_value_from_conf(server.config, "volume_up");
 	server.volume_down = get_char_value_from_conf(server.config, "volume_down");
 	server.volume_mute = get_char_value_from_conf(server.config, "volume_mute");
 	server.brightness_path = get_char_value_from_conf(server.config, "d_power_path");
+	server.saved_brightness = get_current_brightness(server.brightness_path);
 
 	/* Getting zoom variables */
-	server.pan_offset_x = 0;
-	server.pan_offset_y = 0;
 	server.zoom_factor = 1.0;
 	server.zoom_speed = get_double_value_from_conf(server.config, "zoom_speed");
-	server.zoom_top_edge = get_char_value_from_conf(server.config, "zoom_top_edge");
-	server.zoom_edge_threshold = get_double_value_from_conf(server.config, "zoom_edge_threshold");
+	server.zoom_speed_m = server.zoom_speed;
 
 	/* Getting welcome screen command */
 	char *welcome_screen_CMD = get_char_value_from_conf(server.config, "welcome_screen");
 
-	/* Idle variable */
-	server.idle_enabled = false;
-
-	/* The Wayland display is managed by libwayland. It handles accepting
-	 * clients from the Unix socket, manging Wayland globals, and so on. */
-	/* Create the Wayland display */
+	// The Wayland display is managed by libwayland. It handles accepting
+	// clients from the Unix socket, manging Wayland globals, and so on.
 	server.wl_display = wl_display_create();
 	if (!server.wl_display) {
 		wlr_log(WLR_ERROR, "Failed to create Wayland display!");
 		return 1;
 	}
 
-	/* Create the seat for input devices */
-	server.seat = wlr_seat_create(server.wl_display, "seat0");
-	if (!server.seat) {
-		wlr_log(WLR_ERROR, "Failed to create seat!");
-		wl_display_destroy(server.wl_display);
+	// The backend is a wlroots feature which abstracts the underlying input and
+	// output hardware. The autocreate option will choose the most suitable
+	// backend based on the current environment, such as opening an xx11 window
+	// if an xx11 server is running.
+	server.event_loop = wl_display_get_event_loop(server.wl_display);
+	if (!server.event_loop) {
+		wlr_log(WLR_ERROR, "Failed to create event_loop!");
 		return 1;
 	}
-
-	/* The backend is a wlroots feature which abstracts the underlying input and
-	 * output hardware. The autocreate option will choose the most suitable
-	 * backend based on the current environment, such as opening an X11 window
-	 * if an X11 server is running. */
-	server.backend = wlr_backend_autocreate(server.wl_display);
+	server.backend = wlr_backend_autocreate(server.event_loop, &server.session);
 	if (!server.backend) {
 		wlr_log(WLR_ERROR, "Failed to create backend!");
 		return 1;
 	}
 
-	/* Add a Unix socket to the Wayland display. */
-	const char *socket = wl_display_add_socket_auto(server.wl_display);
-	if (!socket) {
-		wlr_log(WLR_ERROR, "Failed to add Unix socket to Wayland display!");
-		return 1;
-	}
-
-	/* Set the WAYLAND_DISPLAY environment variable to our socket and run the
-	 * startup command if requested. */
-	setenv("WAYLAND_DISPLAY", socket, true);
-
-	/*** Autocreates a renderer, either Pixman, GLES2 or Vulkan for us. The user
-	 * can also specify a renderer using the WLR_RENDERER env var.
-	 * The renderer is responsible for defining the various pixel formats it
-	 * supports for shared memory, this configures that for clients. */
+	// Autocreates a renderer, either Pixman, GLES2 or Vulkan for us. The user
+	// can also specify a renderer using the WLR_RENDERER env var.
+	// The renderer is responsible for defining the various pixel formats it
+	// supports for shared memory, this configures that for clients.
 	server.renderer = wlr_renderer_autocreate(server.backend);
 	if (!server.renderer) {
 		wlr_log(WLR_ERROR, "Failed to create renderer!");
 		return 1;
 	}
-	if (!wlr_renderer_init_wl_display(server.renderer, server.wl_display)) {
-		wlr_log(WLR_ERROR, "Failed to initialize renderer with Wayland display!");
-		return 1;
-	}
+	wlr_renderer_init_wl_display(server.renderer, server.wl_display);
 
-	/*** Timer to set background image
-	 * I didn't have much time to fiddle around with serial error:
-	 * xdg_wm_base@8: error 4: wrong configure serial
-	 * so I just added this timer as a workaround, it sets the background after
-	 * a few seconds and thus it avoids the wrong serial error.
-	 */
-	struct wl_event_loop *event_loop = wl_display_get_event_loop(server.wl_display);
-	if (!event_loop) {
-		wlr_log(WLR_ERROR, "Failed to get event loop from Wayland display!");
-		return 1;
-	}
-	server.timer = wl_event_loop_add_timer(event_loop, set_background_image_func, &server);
-	if (!server.timer) {
-		wlr_log(WLR_ERROR, "Failed to create timer!");
-		return 1;
-	}
-	wl_event_source_timer_update(server.timer, 3000);
-
-	/*** Autocreates an allocator for us.
-	 * The allocator is the bridge between the renderer and the backend. It
-	 * handles the buffer creation, allowing wlroots to render onto the
-	 * screen */
+	// Autocreates an allocator for us.
+	// The allocator is the bridge between the renderer and the backend. It
+	// handles the buffer creation, allowing wlroots to render onto the screen 
 	server.allocator = wlr_allocator_autocreate(server.backend, server.renderer);
 	if (!server.allocator) {
 		wlr_log(WLR_ERROR, "Failed to create allocator!");
 		return 1;
 	}
 
-	/*** This creates some hands-off wlroots interfaces. The compositor is
-	 * necessary for clients to allocate surfaces and the data device manager
-	 * handles the clipboard. Each of these wlroots interfaces has room for you
-	 * to dig your fingers in and play with their behavior if you want. Note that
-	 * the clients cannot set the selection directly without compositor approval,
-	 * see the handling of the request_set_selection event below. */
-	server.compositor = wlr_compositor_create(server.wl_display, server.renderer);
+	// This creates some hands-off wlroots interfaces. The compositor is
+	// necessary for clients to allocate surfaces, the subcompositor allows to
+	// assign the role of subsurfaces to surfaces and the data device manager
+	// handles the clipboard. Each of these wlroots interfaces has room for you
+	// to dig your fingers in and play with their behavior if you want. Note that
+	// the clients cannot set the selection directly without compositor approval,
+	// see the handling of the request_set_selection event below.
+	server.compositor = wlr_compositor_create(server.wl_display, 5, server.renderer);
 	if (!server.compositor) {
 		wlr_log(WLR_ERROR, "Failed to create compositor!");
 		return 1;
 	}
+	wlr_subcompositor_create(server.wl_display);
+	wlr_data_device_manager_create(server.wl_display);
 
-	/*** Creates an output layout, which a wlroots utility for working with an
-	 * arrangement of screens in a physical layout. */
-	server.output_layout = wlr_output_layout_create();
+	// Creates an output layout, which a wlroots utility for working with an
+	// arrangement of screens in a physical layout. */
+	server.output_layout = wlr_output_layout_create(server.wl_display);
 	if (!server.output_layout) {
-		wlr_log(WLR_ERROR, "Failed to create output layout!");
-		return 1;
-	}
-	/*** Configure a listener to be notified when new outputs are available on the backend. */
-	wl_list_init(&server.outputs);
-	server.new_output.notify = server_new_output;
-	if (!server.backend) {
-		wlr_log(WLR_ERROR, "Backend is not initialized!");
-		return 1;
-	}
-	wl_signal_add(&server.backend->events.new_output, &server.new_output);
-
-	/*** Output manager */
-	server.wlr_output_manager = wlr_output_manager_v1_create(server.wl_display);
-	if (!server.wlr_output_manager) {
-		wlr_log(WLR_ERROR, "Failed to create output manager!");
-		return 1;
-	}
-	server.output_configuration_applied.notify = handle_output_configuration_applied;
-	wl_signal_add(&server.wlr_output_manager->events.apply, &server.output_configuration_applied);
-	server.output_configuration_tested.notify = handle_output_configuration_tested;
-	wl_signal_add(&server.wlr_output_manager->events.test, &server.output_configuration_tested);
-
-	/*
-	 * Configures a seat, which is a single "seat" at which a user sits and
-	 * operates the computer. This conceptually includes up to one keyboard,
-	 * pointer, touch, and drawing tablet device. We also rig up a listener to
-	 * let us know when new input devices are available on the backend.
-	 */
-	/*** Initialize list for keyboards. */
-	wl_list_init(&server.keyboards);
-
-	/*** Configure a listener to be notified when new input devices are available
-	 & on the backend.
-	*/
-	server.new_input.notify = server_new_input;
-	wl_signal_add(&server.backend->events.new_input, &server.new_input);
-
-	/*** Configure a listener for seat cursor requests. */
-	server.request_cursor.notify = seat_request_cursor;
-	wl_signal_add(&server.seat->events.request_set_cursor, &server.request_cursor);
-
-	/*** Configure a listener for seat selection requests. */
-	server.request_set_selection.notify = seat_request_set_selection;
-	wl_signal_add(&server.seat->events.request_set_selection, &server.request_set_selection);
-
-	/*** Drag and drop */
-	server.start_drag.notify = seat_start_drag;
-	wl_signal_add(&server.seat->events.start_drag, &server.start_drag);
-	server.request_start_drag.notify = seat_request_start_drag;
-	wl_signal_add(&server.seat->events.request_start_drag, &server.request_start_drag);
-
-	/*** Idle timer */
-	// Get timeout from confing file
-	int idle_timeout = get_int_value_from_conf(server.config, "idle_timeout");
-	// idle_timeout = 0 disabled the idle manager
-	if (idle_timeout != 0) {
-		/*** Initialize idle management features. */
-		server.idle_enabled = true;
-
-		/*** Create an idle manager for handling idle state. */
-		server.idle = wlr_idle_create(server.wl_display);
-		if (!server.idle) {
-			wlr_log(WLR_ERROR, "Failed to create idle manager!");
-			return 1;
-		}
-
-		/*** Create an idle timeout for the seat. */
-		server.idle_timeout = wlr_idle_timeout_create(server.idle, server.seat, idle_timeout);
-		if (!server.idle_timeout) {
-			wlr_log(WLR_ERROR, "Failed to create idle timeout!");
-			return 1;
-		}
-
-		/*** Configure event listeners for idle and resume events. */
-		server.new_idle.notify = server_new_idle;
-		wl_signal_add(&server.idle_timeout->events.idle, &server.new_idle);
-
-		server.idle_resume.notify = server_idle_resume;
-		wl_signal_add(&server.idle_timeout->events.resume, &server.idle_resume);
+		wlr_log(WLR_ERROR, "Failed to create wlr_output_layout");
 	}
 	else {
-		server.idle_enabled = false;
+		wlr_log(WLR_DEBUG, "wlr_output_layout created: %p", server.output_layout);
 	}
 
-	/* Set up our list of views and the xdg-shell. The xdg-shell is a Wayland
-	 * protocol which is used for application windows. For more detail on
-	 * shells, refer to the original authot article:
-	 *
-	 * https://drewdevault.com/2018/07/29/Wayland-shells.html
-	 */
-	/*** Initialize lists for views and minimized views. */
-	wl_list_init(&server.views);
-	wl_list_init(&server.minimized_views);
-
-	/*** Create an XDG shell and set up the new surface event listener. */
-	server.xdg_shell = wlr_xdg_shell_create(server.wl_display);
-	if (!server.xdg_shell) {
-		wlr_log(WLR_ERROR, "Failed to create XDG shell!");
-		return 1;
+	server.xdg_output_manager = wlr_xdg_output_manager_v1_create(server.wl_display, server.output_layout);
+	if (!server.xdg_output_manager) {
+		wlr_log(WLR_ERROR, "Failed to create xdg_output_manager_v1");
 	}
-	server.new_xdg_surface.notify = server_new_xdg_surface;
-	wl_signal_add(&server.xdg_shell->events.new_surface, &server.new_xdg_surface);
-
-	/*** Create a cursor and attach it to the output layout. */
-	server.cursor = wlr_cursor_create();
-	if (!server.cursor) {
-		wlr_log(WLR_ERROR, "Failed to create cursor!");
-		return 1;
+	else {
+		wlr_log(WLR_DEBUG, "xdg_output_manager_v1 created: %p", server.xdg_output_manager);
 	}
-	if (!server.output_layout) {
-		wlr_log(WLR_ERROR, "Output layout is not initialized!");
-		return 1;
+
+	// Configure a listener to be notified when new outputs are available on the backend.
+	wl_list_init(&server.outputs);
+	server.new_output.notify = server_new_output;
+	wl_signal_add(&server.backend->events.new_output, &server.new_output);
+	
+	// Create a scene graph. This is a wlroots abstraction that handles all
+	// rendering and damage tracking. All the compositor author needs to do
+	// is add things that should be rendered to the scene graph at the proper
+	// positions and then call wlr_scene_output_commit() to render a frame if necessary.
+	server.scene = wlr_scene_create();
+	server.scene_layout = wlr_scene_attach_output_layout(server.scene, server.output_layout);
+	
+	// Set up xdg-shell version 3. The xdg-shell is a Wayland protocol which is
+	// used for application windows. For more detail on shells, refer to
+	// https://drewdevault.com/2018/07/29/Wayland-shells.html.
+	wl_list_init(&server.toplevels);
+	server.xdg_shell = wlr_xdg_shell_create(server.wl_display, 3);
+
+	// Handle toplevels
+	server.new_xdg_toplevel.notify = server_new_xdg_toplevel;
+	wl_signal_add(&server.xdg_shell->events.new_toplevel, &server.new_xdg_toplevel);
+	
+	// Handle popups
+	server.new_xdg_popup.notify = server_new_xdg_popup;
+	wl_signal_add(&server.xdg_shell->events.new_popup, &server.new_xdg_popup);
+
+	server.toplevel_manager = wlr_foreign_toplevel_manager_v1_create(server.wl_display);
+	if (!server.toplevel_manager) {
+		fprintf(stderr, "Failed to create foreign toplevel manager\n");
+		exit(EXIT_FAILURE);
 	}
-	wlr_cursor_attach_output_layout(server.cursor, server.output_layout);
 
-
-    // Get the XCURSOR_SIZE environment variable
-    const char *env_cursor_size = getenv("XCURSOR_SIZE");
-    int cursor_size = 48; // Default cursor size
-    // If the environment variable is set, use its value
-    if (env_cursor_size != NULL) {
-        int env_size = atoi(env_cursor_size);
-        if (env_size > 0) { // Ensure the value is valid
-            cursor_size = env_size;
-        }
-    }
-	// Creates an xcursor manager and loads the theme
-	server.cursor_mgr = wlr_xcursor_manager_create(NULL, cursor_size);
-	if (!server.cursor_mgr) {
-		wlr_log(WLR_ERROR, "Failed to create XCursor manager.");
-		return 1;
-	}
-	wlr_xcursor_manager_load(server.cursor_mgr, 1);
-	if (!server.cursor_mgr) {
-		wlr_log(WLR_ERROR, "Failed to load XCursor manager.");
-		return 1;
-	}
-	// Set the initial cursor image
-	wlr_xcursor_manager_set_cursor_image(server.cursor_mgr, "left_ptr", server.cursor);
-
-	/*
-	 * wlr_cursor *only* displays an image on screen. It does not move around
-	 * when the pointer moves. However, we can attach input devices to it, and
-	 * it will generate aggregate events for all of them. In these events, we
-	 * can choose how we want to process them, forwarding them to clients and
-	 * moving the cursor around. More detail on this process is described in the
-	 * original authot input handling blog post:
-	 *
-	 * https://drewdevault.com/2018/07/17/Input-handling-in-wlroots.html
-	 *
-	 * And more comments are sprinkled throughout the notify functions above.
-	 */
-	/*** Configure event listeners for cursor events. */
-
-	/*** Cursor motion event listener. */
-	server.cursor_motion.notify = server_cursor_motion;
-	wl_signal_add(&server.cursor->events.motion, &server.cursor_motion);
-
-	/*** Cursor absolute motion event listener. */
-	server.cursor_motion_absolute.notify = server_cursor_motion_absolute;
-	wl_signal_add(&server.cursor->events.motion_absolute, &server.cursor_motion_absolute);
-
-	/*** Cursor button event listener. */
-	server.cursor_button.notify = server_cursor_button;
-	wl_signal_add(&server.cursor->events.button, &server.cursor_button);
-
-	/*** Cursor axis event listener. */
-	server.cursor_axis.notify = server_cursor_axis;
-	wl_signal_add(&server.cursor->events.axis, &server.cursor_axis);
-
-	/*** Cursor frame event listener. */
-	server.cursor_frame.notify = server_cursor_frame;
-	wl_signal_add(&server.cursor->events.frame, &server.cursor_frame);
-
-
-	/*** Initialize list for layer surfaces. */
-	wl_list_init(&server.layer_surfaces);
-
-	/*** Create layer shell and configure a listener for new layer surfaces. */
-	server.layer_shell = wlr_layer_shell_v1_create(server.wl_display);
-	if (!server.layer_shell) {
-		wlr_log(WLR_ERROR, "Failed to create layer shell!");
-		return 1;
-	}
-	server.new_layer_surface.notify = server_new_layer_surface;
-	wl_signal_add(&server.layer_shell->events.new_surface, &server.new_layer_surface);
-
-	/*** Create virtual keyboard manager and configure a listener for new virtual keyboards. */
-	server.virtual_keyboard_mgr = wlr_virtual_keyboard_manager_v1_create(server.wl_display);
-	if (!server.virtual_keyboard_mgr) {
-		wlr_log(WLR_ERROR, "Failed to create virtual keyboard manager!");
-		return 1;
-	}
-	server.new_virtual_keyboard.notify = new_virtual_keyboard_handler;
-	wl_signal_add(&server.virtual_keyboard_mgr->events.new_virtual_keyboard,
-											  &server.new_virtual_keyboard);
-
-	/*** Initialize data-related interfaces. */
-	if (!wlr_viewporter_create(server.wl_display)) {
-		wlr_log(WLR_ERROR, "Failed to create viewporter!");
-		return 1;
-	}
-	if (!wlr_data_device_manager_create(server.wl_display)) {
-		wlr_log(WLR_ERROR, "Failed to create data device manager!");
-		return 1;
-	}
-	if (!wlr_screencopy_manager_v1_create(server.wl_display)) {
-		wlr_log(WLR_ERROR, "Failed to create screencopy manager!");
-		return 1;
-	}
-	if (!wlr_data_control_manager_v1_create(server.wl_display)) {
-		wlr_log(WLR_ERROR, "Failed to create data control manager!");
-		return 1;
-	}
-	if (!wlr_xdg_output_manager_v1_create(server.wl_display, server.output_layout)) {
-		wlr_log(WLR_ERROR, "Failed to create XDG output manager!");
-		return 1;
-	}
-	server.wlr_foreign_toplevel_mgr = wlr_foreign_toplevel_manager_v1_create(server.wl_display);
-	if (!server.wlr_foreign_toplevel_mgr) {
-		wlr_log(WLR_ERROR, "Failed to create foreign toplevel manager!");
-		return 1;
-	}
 	server.wlr_relative_pointer_manager = wlr_relative_pointer_manager_v1_create(server.wl_display);
 	if (!server.wlr_relative_pointer_manager) {
 		wlr_log(WLR_ERROR, "Failed to create relative pointer manager!");
@@ -3797,10 +3534,89 @@ int main(int argc, char *argv[]) {
 		wlr_log(WLR_ERROR, "Failed to create pointer constraints!");
 		return 1;
 	}
-	server.wlr_pointer_constraints = wlr_pointer_constraints_v1_create(server.wl_display);
 	server.new_pointer_constraint.notify = handle_new_pointer_constraint;
 	wl_signal_add(&server.wlr_pointer_constraints->events.new_constraint,
 										&server.new_pointer_constraint);
+	// Creates a cursor, which is a wlroots utility for tracking the cursor
+	// image shown on screen.
+	server.cursor = wlr_cursor_create();
+	wlr_cursor_attach_output_layout(server.cursor, server.output_layout);
+
+	// Creates an xcursor manager, another wlroots utility which loads up
+	// Xcursor themes to source cursor images from and makes sure that cursor
+	// images are available at all scale factors on the screen (necessary for HiDPI support).
+	server.cursor_mgr = wlr_xcursor_manager_create(NULL, 24);
+
+	// wlr_cursor *only* displays an image on screen. It does not move around
+	// when the pointer moves. However, we can attach input devices to it, and
+	// it will generate aggregate events for all of them. In these events, we
+	// can choose how we want to process them, forwarding them to clients and
+	// moving the cursor around. More detail on this process is described in
+	// https://drewdevault.com/2018/07/17/Input-handling-in-wlroots.html.
+	// And more comments are sprinkled throughout the notify functions above.
+	server.cursor_mode = WOODLAND_CURSOR_PASSTHROUGH;
+	server.cursor_motion.notify = server_cursor_motion;
+	wl_signal_add(&server.cursor->events.motion, &server.cursor_motion);
+	server.cursor_motion_absolute.notify = server_cursor_motion_absolute;
+	wl_signal_add(&server.cursor->events.motion_absolute, &server.cursor_motion_absolute);
+	server.cursor_button.notify = server_cursor_button;
+	wl_signal_add(&server.cursor->events.button, &server.cursor_button);
+	server.cursor_axis.notify = server_cursor_axis;
+	wl_signal_add(&server.cursor->events.axis, &server.cursor_axis);
+	server.cursor_frame.notify = server_cursor_frame;
+	wl_signal_add(&server.cursor->events.frame, &server.cursor_frame);
+
+	// Configures a seat, which is a single "seat" at which a user sits and
+	// operates the computer. This conceptually includes up to one keyboard,
+	// pointer, touch, and drawing tablet device. We also rig up a listener to
+	// let us know when new input devices are available on the backend.
+	wl_list_init(&server.keyboards);
+	server.new_input.notify = server_new_input;
+	wl_signal_add(&server.backend->events.new_input, &server.new_input);
+	
+	// Create the seat for input devices 
+	server.seat = wlr_seat_create(server.wl_display, "seat0");
+	if (!server.seat) {
+		wlr_log(WLR_ERROR, "Failed to create seat!");
+		wl_display_destroy(server.wl_display);
+		return 1;
+	}
+
+	server.request_cursor.notify = seat_request_cursor;
+	wl_signal_add(&server.seat->events.request_set_cursor, &server.request_cursor);
+	server.request_set_selection.notify = seat_request_set_selection;
+	wl_signal_add(&server.seat->events.request_set_selection, &server.request_set_selection);
+
+	/*** Drag and drop */
+	server.start_drag.notify = seat_start_drag;
+	wl_signal_add(&server.seat->events.start_drag, &server.start_drag);
+	server.request_start_drag.notify = seat_request_start_drag;
+	wl_signal_add(&server.seat->events.request_start_drag, &server.request_start_drag);
+
+	if (!wlr_screencopy_manager_v1_create(server.wl_display)) {
+		wlr_log(WLR_ERROR, "Failed to create screencopy manager!");
+		return -1;
+	}
+
+	/*** Create virtual keyboard manager and configure a listener for new virtual keyboards. */
+	server.virtual_keyboard_mgr = wlr_virtual_keyboard_manager_v1_create(server.wl_display);
+	if (!server.virtual_keyboard_mgr) {
+		wlr_log(WLR_ERROR, "Failed to create virtual keyboard manager!");
+		return 1;
+	}
+	server.new_virtual_keyboard.notify = new_virtual_keyboard_handler;
+	wl_signal_add(&server.virtual_keyboard_mgr->events.new_virtual_keyboard, &server.new_virtual_keyboard);
+
+	if (!wlr_viewporter_create(server.wl_display)) {
+		wlr_log(WLR_ERROR, "Failed to create viewporter!");
+		return 1;
+	}
+	/* Add a Unix socket to the Wayland display. */
+	const char *socket = wl_display_add_socket_auto(server.wl_display);
+	if (!socket) {
+		wlr_log(WLR_ERROR, "Failed to add Unix socket to Wayland display!");
+		return 1;
+	}
 
 	/* Start the backend. This will enumerate outputs and inputs, become the DRM
 	 * master, etc */
@@ -3810,6 +3626,80 @@ int main(int argc, char *argv[]) {
 		wl_display_destroy(server.wl_display);
 		return 1;
 	}
+
+	{
+		struct wlr_drm_format_set formats = {0}; // Initialize DRM format set
+
+		// Add a valid DRM format and modifier
+		if (!wlr_drm_format_set_add(&formats, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_INVALID)) {
+			default_tranche.formats = formats;
+			wlr_log(WLR_ERROR, "Failed to add DRM_FORMAT_ARGB8888 to DMABUF feedback");
+			return 1;
+		}
+		else {
+			wlr_log(WLR_DEBUG, "Successfully added DRM_FORMAT_ARGB8888 with modifier DRM_FORMAT_MOD_INVALID");
+		}
+
+		// Assign formats to default tranche
+		default_tranche.formats = formats;
+
+		// Validate tranche setup
+		if (default_tranche.formats.len == 0) {
+			wlr_log(WLR_ERROR, "Default tranche has no valid formats!");
+			return 1;
+		}
+
+		// Log feedback details before creating DMABUF object
+		wlr_log(WLR_DEBUG, "DMABUF feedback setup:");
+		wlr_log(WLR_DEBUG, "Main device: %lx", (unsigned long)default_feedback.main_device);
+		wlr_log(WLR_DEBUG, "Tranches size: %zu", default_feedback.tranches.size);
+
+		server.linux_dmabuf = wlr_linux_dmabuf_v1_create_with_renderer(server.wl_display, 3, server.renderer);
+		if (!server.linux_dmabuf) {
+			wlr_log(WLR_ERROR, "Failed to create Linux DMABUF object");
+			return 1;
+		}
+	}
+
+	wlr_log(WLR_DEBUG, "Initialized DMA-BUF support");
+
+	// Set the WAYLAND_DISPLAY environment variable to our socket and run the
+	// startup command if requested. */
+	setenv("WAYLAND_DISPLAY", socket, true);
+
+	struct wlr_output *output = wlr_output_layout_output_at(server.output_layout,
+															server.cursor->x,
+															server.cursor->y);
+	wlr_output_transformed_resolution(output, &server.transformed_width, &server.transformed_height);
+	// Background picture setup
+	char *background_img = get_char_value_from_conf(server.config, "background");
+	if (!background_img) {
+		wlr_log(WLR_ERROR, "No background image provided in config");
+	}
+	else {
+		background_setup(&server, output, &background_img);
+	}
+
+	// Panel setup
+	server.cr = NULL;
+	server.font_face = NULL;
+	server.panel_buffer = NULL;
+	server.cairo_surface = NULL;
+	server.network_buffer = NULL;
+	server.calendar_buffer = NULL;
+	server.wlr_panel_buffer = NULL;
+	server.panel_scene_output = NULL;
+
+	// Showing time clock
+	panel_setup(&server, output, PPANEL_WIDTH, PPANEL_HEIGHT);
+
+	// Window list
+	///server.toplevel_info info = {0};
+	server.toplevel_info.titles[0] = '\0';
+	server.toplevel_info.app_id[0] = '\0';
+	server.toplevel_info.minimized[0] = '\0';
+
+	// Running startup commands
 	if (startup_cmd) {
 		if (fork() == 0) {
 			run_cmd(startup_cmd);
@@ -3820,11 +3710,16 @@ int main(int argc, char *argv[]) {
 		fprintf(stderr, "welcome_screen_CMD: %s\n", welcome_screen_CMD);
 		run_cmd(welcome_screen_CMD);
 		/*** Startup commands after delay */
-		server.autostart_timer = wl_event_loop_add_timer(event_loop,
+		server.autostart_timer = wl_event_loop_add_timer(server.event_loop,
 														 process_startup_commands,
 														 &server);
+		if (!server.autostart_timer) {
+			wlr_log(WLR_ERROR, "Failed to create autostart_timer!");
+			return 1;
+		}
 		wl_event_source_timer_update(server.autostart_timer, 7000);
 	}
+
 	/* Run the Wayland event loop. This does not return until you exit the
 	 * compositor. Starting the backend rigged up all of the necessary event
 	 * loop configuration to listen to libinput events, DRM events, generate
@@ -3835,74 +3730,172 @@ int main(int argc, char *argv[]) {
 	/* Once wl_display_run returns, we shut down the server. */
 	wlr_log(WLR_INFO, "Shutting down Woodland compositor...");
 
-	// Clean up signals (assuming signal cleanup functions are available)
 	// Free allocated memory
+	wlr_log(WLR_DEBUG, "Shutting down server.ssids");
+	if (server.ssids[0] != NULL) {
+		for (size_t i = 0; server.ssids[i] != NULL; i++) {
+			fprintf(stderr, "server.ssids[%ld]: %s\n", i, server.ssids[i]);
+			free(server.ssids[i]);
+			server.ssids[i] = NULL;
+		}
+	}
+	wlr_log(WLR_DEBUG, "Shutting down welcome_screen_CMD");
 	if (welcome_screen_CMD) {
 		free(welcome_screen_CMD);
 		welcome_screen_CMD = NULL;
 	}
-	if (server.zoom_top_edge) {
-		free(server.zoom_top_edge);
-		server.zoom_top_edge = NULL;
+	wlr_log(WLR_DEBUG, "Shutting down background_img");
+	if (background_img) {
+		free(background_img);
+		background_img = NULL;
 	}
-	if (server.brightness_path) {
-		free(server.brightness_path);
-		server.brightness_path = NULL;
-	}
-	if (server.play_pause) {
-		free(server.play_pause);
-		server.play_pause = NULL;
-	}
-	if (server.volume_up) {
-		free(server.volume_up);
-		server.volume_up = NULL;
-	}
-	if (server.volume_down) {
-		free(server.volume_down);
-		server.volume_down = NULL;
-	}
-	if (server.volume_mute) {
-		free(server.volume_mute);
-		server.volume_mute = NULL;
-	}
-	if (server.config) {
-		free(server.config);
-		server.config = NULL;
-	}
-
-	// Destroy wlroots objects in reverse order of their creation
-	if (server.idle_timeout) {
-		wlr_idle_timeout_destroy(server.idle_timeout);
-		server.idle_timeout = NULL;
-	}
-	if (server.cursor_mgr) {
-		wlr_xcursor_manager_destroy(server.cursor_mgr);
-		server.cursor_mgr = NULL;
-	}
-	if (server.allocator) {
-		wlr_allocator_destroy(server.allocator);
-		server.allocator = NULL;
-	}
-	if (server.cursor) {
-		wlr_cursor_destroy(server.cursor);
-		server.cursor = NULL;
-	}
-	if (server.renderer) {
-		wlr_renderer_destroy(server.renderer);
-		server.renderer = NULL;
-	}
+	wlr_log(WLR_DEBUG, "Shutting down server.backend");
 	if (server.backend) {
 		wlr_backend_destroy(server.backend);
 		server.backend = NULL;
 	}
-	if (server.output_layout) {
-		wlr_output_layout_destroy(server.output_layout);
-		server.output_layout = NULL;
-	}
+	wlr_log(WLR_DEBUG, "Shutting down server.seat");
 	if (server.seat) {
 		wlr_seat_destroy(server.seat);
 		server.seat = NULL;
 	}
+	wlr_log(WLR_DEBUG, "Shutting down server.scene");
+	if (server.scene) {
+		wlr_scene_node_destroy(&server.scene->tree.node);
+		server.scene = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.config_sizes");
+	if (server.config_sizes) {
+		free(server.config_sizes);
+		server.config_sizes = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.tap_enable");
+	if (server.tap_enable) {
+		free(server.tap_enable);
+		server.tap_enable = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.brightness_path");
+	if (server.brightness_path) {
+		free(server.brightness_path);
+		server.brightness_path = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.play_pause");
+	if (server.play_pause) {
+		free(server.play_pause);
+		server.play_pause = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.volume_up");
+	if (server.volume_up) {
+		free(server.volume_up);
+		server.volume_up = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.volume_down");
+	if (server.volume_down) {
+		free(server.volume_down);
+		server.volume_down = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.volume_mute");
+	if (server.volume_mute) {
+		free(server.volume_mute);
+		server.volume_mute = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.config");
+	if (server.config) {
+		free(server.config);
+		server.config = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.volumeHigh");
+	if (server.volumeHigh) {
+		free(server.volumeHigh);
+		server.volumeHigh = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.brightnessIcon");
+	if (server.brightnessIcon) {
+		free(server.brightnessIcon);
+		server.brightnessIcon = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.networkIcon");
+	if (server.networkIcon) {
+		free(server.networkIcon);
+		server.networkIcon = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.wlr_panel_buffer");
+	if (server.wlr_panel_buffer) {
+		wlr_buffer_drop(server.wlr_panel_buffer);
+		server.wlr_panel_buffer = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.background_scene_buffer->texture");
+	if (server.background_scene_buffer) {
+		wlr_texture_destroy(server.background_scene_buffer->texture);
+		server.background_scene_buffer->texture = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.panel_buffer->texture");
+	if (server.panel_buffer->texture) {
+		wlr_texture_destroy(server.panel_buffer->texture);
+		server.panel_buffer->texture = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.calendar_buffer->texture");
+	if (server.calendar_texture && server.calendar_buffer->texture) {
+		cairo_surface_flush(server.cairo_surface);
+		wlr_texture_destroy(server.calendar_buffer->texture);
+		server.calendar_buffer->texture = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.network_buffer->texture");
+	if (server.network_texture && server.network_buffer->texture) {
+		wlr_texture_destroy(server.network_buffer->texture);
+		server.network_buffer->texture = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.font_face");
+	if (server.font_face) {
+		cairo_font_face_destroy(server.font_face);
+		server.font_face = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.cr");
+	if (server.cr) {
+		cairo_destroy(server.cr);
+		server.cr = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.cairo_surface");
+	if (server.cairo_surface) {
+		cairo_surface_destroy(server.cairo_surface);
+		server.cairo_surface = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.time_update_timer");
+	if (server.time_update_timer) {
+		wl_event_source_remove(server.time_update_timer);
+		server.time_update_timer = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.autostart_timer");
+	if (!server.autostart_cmd_ran && server.autostart_timer) {
+		wl_event_source_remove(server.autostart_timer);
+		server.autostart_timer = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.output_layout");
+	if (server.output_layout) {
+		wlr_output_layout_destroy(server.output_layout);
+		server.output_layout = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.renderer");
+	if (server.renderer) {
+		wlr_renderer_destroy(server.renderer);
+		server.renderer = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.cursor_mgr");
+	if (server.cursor_mgr) {
+		wlr_xcursor_manager_destroy(server.cursor_mgr);
+		server.cursor_mgr = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.cursor");
+	if (server.cursor) {
+		wlr_cursor_destroy(server.cursor);
+		server.cursor = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.allocator");
+	if (server.allocator) {
+		wlr_allocator_destroy(server.allocator);
+		server.allocator = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.wl_display");
 	if (server.wl_display) {
 		wl_display_destroy_clients(server.wl_display);
 		wl_display_flush_clients(server.wl_display);
@@ -3910,6 +3903,5 @@ int main(int argc, char *argv[]) {
 		server.wl_display = NULL;
 	}
 	wlr_log(WLR_INFO, "See you next time in Woodland :)");
-
 	return 0;
 }

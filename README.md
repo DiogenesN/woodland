@@ -2,25 +2,26 @@
 
 # Woodland
 
-Woodland is a minimal lightweight wlroots-based window-stacking compositor for Wayland, inspired
-by Wayfire and TinyWl. For a minimal desktop environment experience you can use it together with:
+    Woodland is a minimal lightweight wlroots-based window-stacking compositor for Wayland, inspired
+by Wayfire and TinyWl. This version is ported to wlroots 0.18. Woodland was born out of the idea
+that there was no window-stacking Wayland compositors that would also have the zooming capability
+which is crucial for me. There was only GNOME and Wayfire, the first one is not my taste at all,
+also the zooming in GNOME is not ideal.\
+    Wayfire is great and zooming works well but I wanted to implement some functionality and
+it was C++, I can only speak C. Another concern is longevity and maintainability, if tomorrow Wayfire
+goes away I will remain with no options, that is why I decided to make my own compositor and implement
+all the functionality I need and I will be glad if someone finds it useful too.\
+    Another thing, I build it on Debian 13 stable (not testing) so a new version is expected once every
+two years (following Debian stable release cycle). Woodland has no reliance on any particular
+Desktop Environment, Desktop Shell or session. Also it does not depend on any UI toolkits such as Qt or GTK.
 
-Panel:
-[diowpanel](https://github.com/DiogenesN/diowpanel)\
-Menu:
-[diowmenu](https://github.com/DiogenesN/diowmenu)\
-Window list:
-[diowwindowlist](https://github.com/DiogenesN/diowwindowlist)\
+Recommended quick app launcher:
+
 Application launcher:
 [diowapplauncher](https://github.com/DiogenesN/diowapplauncher)\
 Welcome Screen:
 [welcomescreen](https://github.com/DiogenesN/welcomescreen).
 
-Woodland has no reliance on any particular Desktop Environment, Desktop Shell or session.
-Also it does not depend on any UI toolkits such as Qt or GTK.
-
-The main goal of Woodland is to provide basic functionality, ease of use and keeping things simple.
-It was tested on Debian 12.
 
 # Special thanks to all the developers, maintainers and contributors of the following projects:
 
@@ -35,38 +36,50 @@ vivarium\
 
 # and also to all open-source enthusiasts in general.
 
-# Features
+# Compositor features
 
-   1. Screen zooming.
-   2. Idle timeout.
+   1. Screen zooming (Super+mouse wheel or scrolling on the top left corner of the screen).
+   2. A little panel (hovering bottom right corner of the screen).
    3. Set background image (without relying on third-party utilities).
    4. Multiple keyboard layouts.
    5. Per application keyboard layout.
    6. Keyboard shortcuts.
    7. Multimedia keys support.
    8. User-defined window placement.
-   9. Autostart applications.
+   9. Automatic window size save.
+   19. Autostart applications.
+   11. Menu showing a list of opened windows (clicking the top right corner).
+   12. Menu showing a list of user defined items (clicking the bottom left corner).
 
-# TODO:
+# Panel features
 
-  Idle inhibitor, damage tracking, maximizing, decorations.
+   1. Volume adjusting.
+   2. Brightness adjusting.
+   3. Right click on panel brightness icon switches off the display, press super key to switch back on.
+   4. Time widget, clicking on it opens up a calendar for the current month.
+   5. Network widget, clicking on it opens up a network applet.
 
 # Installation
 
   1. To build the project you need to install the following libs:
 
-		 make
-		 pkgconf
-		 libstb-dev
-		 libdrm-dev
-		 libgles-dev
-		 libinput-dev
-		 libwayland-dev
-		 libwlroots-dev
-		 libpixman-1-dev
-		 libxkbcommon-dev
+		gcc
+		bash
+		make
+		pkgconf
+		libstb-dev
+		libdrm-dev
+		librsvg2-dev
+		libinput-dev
+		libcairo2-dev
+		libdbus-1-dev
+		linux-libc-dev
+		libwayland-dev
+		libpixman-1-dev
+		libxkbcommon-dev
+		libwlroots-0.18-dev
 
-  2. Open a terminal and run:
+  2. Open a terminal in the extracted folder and run:
  
 		 chmod +x ./configure
 		 ./configure
@@ -79,7 +92,8 @@ vivarium\
 		 (if you just want to test it then run: make run)
 ## Tips
 
-  If wlroots complains about missing header files then copy the header files from 'include' directory to '/usr/include/wlr/types/'
+  You will have to do a lot of work to adjust the correct header files paths in wlroots.\
+  Copy the header files from 'include' directory to '/usr/include/wlroots-0.18/wlr/types/'
 
 # Usage
 
@@ -125,11 +139,13 @@ If it finds any of those installed, it will automatically launch the first one f
 To disable this behavior you will need to set up at least one startup command in woodland.ini.
 
 # Configuration
-Woodland creates the following configuration file:
+Woodland creates the following configuration files:
 
 		~/.config/woodland/woodland.ini
+		~/.config/woodland/windows_sizes.db
 
-  it is very straightforward and self-explanatory but we will go through each section
+  'windows_sizes.db' is automatically written on any window closing and storing the sizes before closing.\
+  'woodland.ini' is very straightforward and self-explanatory but we will go through each section
 
   1. Welcome screen
 
@@ -138,15 +154,18 @@ Woodland creates the following configuration file:
     for instance you can use my welcome screen application like this:\
     welcome_screen = welcomescreen --resolution 1920x1080
 
-  3. Idle
+  2. Brightness
  
-	[ Idle ]
-	The timeout in milliseconds until the system is considered idle.
-	One minute is 60000 milliseconds.
-	idle_timeout = 0 disables the timeout.
- 	d_power_path, the path to the file that controls the brightness level.
-	idle_timeout = 180000
- 	d_power_path = /sys/class/backlight/intel_backlight/brightness
+   [ Brightness ]
+   In order for backlight to worl you have to do the following:
+       sudo usermod -aG video $USER
+       sudo touch /etc/udev/rules.d/90-backlight.rules
+       sudo nano /etc/udev/rules.d/90-backlight.rules
+       add the following to '90-backlight.rules':
+       ACTION=="add", SUBSYSTEM=="backlight", KERNEL=="intel_backlight", RUN+="/bin/chgrp video /sys/class/backlight/intel_backlight/brightness", RUN+="/bin/chmod 664 /sys/class/backlight/intel_backlight/brightness"
+
+   d_power_path, the path to the file that controls the brightness level.
+   d_power_path = /sys/class/backlight/intel_backlight/brightness
 
   3. Background image
 
@@ -154,14 +173,20 @@ Woodland creates the following configuration file:
 	Provide the full path to the image.
 	background = /home/username/image.png
 
-  4. Keyboard layouts
+  4. Touchpan tap-to-click
+
+	[ Touchpad ]
+    Enable or disable tap to click (default enable).
+    tap_to_click = enable
+
+  5. Keyboard layouts
 
 	[ Keyboard layouts ]
 	Alt+Shift to switch layouts
 	e.g: xkb_layouts=us,de
 	xkb_layouts=us,de
 
-  4. Multimedian keys
+  6. Multimedian keys
 
 	[ Multimedia keys ]
 	For default multimedia keys support install: playerctl, alsa-utils
@@ -171,7 +196,7 @@ Woodland creates the following configuration file:
 	volume_down = amixer set Master 3-
 	volume_mute = amixer set Master toggle
 
-  5. Keyboard shortcuts
+  7. Keyboard shortcuts
 
 	[ Keyboard Shortcuts ]
 	Modifiers names:
@@ -191,7 +216,7 @@ Woodland creates the following configuration file:
 	binding_thunar = WLR_MODIFIER_LOGO XKB_KEY_f
 	command_thunar = thunar
 
-  6. Window placement
+  8. Window placement
 
 	[ Window Placement ]
 	Open specified windows at the given fixed position.
@@ -208,18 +233,16 @@ Woodland creates the following configuration file:
 	Placing thunar
 	window_place = app_id: thunar -15 -15
 
-  7. Zoom
+  9. Zoom
 
 	[ Zoom ]
 	Zooming is activated by pressing super key and scrolling.
+	Another way of zooming is by scrolling ont he top left corner of the screen,
 	zoom_speed defines how fast zooming area is moving around.
-	zoom_edge_threshold defines the distance from the edges to start panning.
-	zoom_top_edge if 'enabled' then you can scroll on the left top edge to zoom.
-	zoom_speed = 5
-	zoom_top_edge = enabled
-	zoom_edge_threshold = 30
+    zoom_speed = 0.009
 
-  8. Autostart applications
+
+  10. Autostart applications
 
   	[ Startup ]
 	Specify the startup commands.
@@ -230,11 +253,32 @@ Woodland creates the following configuration file:
 	NOTE: the line must start with startup_command
 
 	My startup applications:
-	startup_command = mako
 	startup_command = polari
-	startup_command = diowmenu
-	startup_command = diowpanel
-	startup_command = diowwindowlist
+
+  11. Menu
+
+    [ Menu ]
+    Here you can specify a few items that will appear
+    when clicking on the left bottom corner of the screen.
+    First 'menu_item' should be the name of the application (e.g. Thunar File Manager).
+    Second 'menu_item' is the command for the application (thunar).
+    Examples:
+    menu_item = Reboot
+    menu_item = systemctl reboot
+    menu_item = Power Off
+    menu_item = systemctl poweroff
+
+  12. Window list
+
+    [ Windowlist ]
+    Clicking on the top right corner of the screen shows a window list.
+
+  13. Panel
+
+    [ Panel ]
+    Hovering over the bottom right corner of the screen shows a panel.
+    Right click on the brightness icon will switch off the screen,
+    pressing Super key will turn it back on.
 
 That is it enjoy!
 

@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 set -e
 
-if which pkgconf > /dev/null; then
-    echo "pkg-config found."
+if which gcc > /dev/null; then
+    echo "gcc found."
 else
-    echo "Error: 'pkgconf' not found. Please install the library."
+    echo "Error: 'gcc' not found. Please install the library."
     exit 1
 fi
 
@@ -16,59 +16,80 @@ else
     exit 1
 fi
 
+if which pkgconf > /dev/null; then
+    echo "pkgconf found."
+else
+    echo "Error: 'pkgconf' not found. Please install the library."
+    exit 1
+fi
+
 if pkg-config --exists stb; then
-    echo "stb found."
+    echo "libstb-dev found."
 else
     echo "Error: 'libstb-dev' not found. Please install the library."
     exit 1
 fi
 
 if pkg-config --exists libdrm; then
-    echo "libdrm found."
+    echo "libdrm-dev found."
 else
     echo "Error: 'libdrm-dev' not found. Please install the library."
     exit 1
 fi
 
-if pkg-config --exists glesv2; then
-    echo "glesv2 found."
+if pkg-config --exists librsvg-2.0; then
+    echo "librsvg2-dev found."
 else
-    echo "Error: 'libgles-dev' not found. Please install the library."
-    exit 1
-fi
-
-if pkg-config --exists wlroots; then
-    echo "wlroots found."
-else
-    echo "Error: 'libwlroots-dev' not found. Please install the library."
+    echo "Error: 'librsvg2-dev' not found. Please install the library."
     exit 1
 fi
 
 if pkg-config --exists libinput; then
-    echo "libinput found."
+    echo "libinput-dev found."
 else
     echo "Error: 'libinput-dev' not found. Please install the library."
     exit 1
 fi
 
+if pkg-config --exists cairo; then
+    echo "libcairo2-dev found."
+else
+    echo "Error: 'libcairo2-dev' not found. Please install the library."
+    exit 1
+fi
+
+if pkg-config --exists dbus-1; then
+    echo "libdbus-1-dev found."
+else
+    echo "Error: 'libdbus-1-dev' not found. Please install the library."
+    exit 1
+fi
+
+if pkg-config --exists wayland-server; then
+    echo "libwayland-dev found."
+else
+    echo "Error: 'libwayland-dev' not found. Please install the library."
+    exit 1
+fi
+
 if pkg-config --exists pixman-1; then
-    echo "pixman-1 found."
+    echo "libpixman-1-dev found."
 else
     echo "Error: 'libpixman-1-dev' not found. Please install the library."
     exit 1
 fi
 
 if pkg-config --exists xkbcommon; then
-    echo "xkbcommon found."
+    echo "libxkbcommon-dev found."
 else
     echo "Error: 'libxkbcommon-dev' not found. Please install the library."
     exit 1
 fi
 
-if pkg-config --exists wayland-server; then
-    echo "wayland-server found."
+if pkg-config --exists wlroots-0.18; then
+    echo "libwlroots-0.18-dev found."
 else
-    echo "Error: 'libwayland-dev' not found. Please install the library."
+    echo "Error: 'libwlroots-0.18-dev' not found. Please install the library."
     exit 1
 fi
 

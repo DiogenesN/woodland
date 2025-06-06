@@ -6,5 +6,6 @@
 int get_int_value_from_conf(char *fullPathToConf, char *nameToGetValueFrom);
 double get_double_value_from_conf(char *fullPathToConf, char *nameToGetValueFrom);
 char *get_char_value_from_conf(char *fullPathToConf, char *nameToGetValueFrom);
+void remove_given_text_line_from_conf(char *fullPathToConf, char *LineOfText);
 
 #endif
