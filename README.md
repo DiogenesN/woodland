@@ -176,9 +176,9 @@ Woodland creates the following configuration files:
 
   4. Touchpan tap-to-click
 
-   [ Touchpad ]\
-   Enable or disable tap to click (default enable).\
-   tap_to_click = enable\
+    [ Touchpad ]\
+    Enable or disable tap to click (default enable).\
+    tap_to_click = enable\
 
   5. Keyboard layouts
 
