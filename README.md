@@ -3,14 +3,15 @@
 # Woodland
 
 Woodland is a minimal lightweight wlroots-based window-stacking compositor for Wayland, inspired\
-by Wayfire and TinyWl. This version is ported to wlroots 0.18. Woodland was born out of the idea\
+by Wayfire and TinyWl. This version is ported to wlroots 0.18.  Woodland was born out of the idea\
 that there was no window-stacking Wayland compositors that would also have the zooming capability\
-which is crucial for me. There was only GNOME and Wayfire, the first one is not my taste at all,\
-also the zooming in GNOME is not ideal.Wayfire is great and zooming works well but I wanted to\
-implement some functionality and it was C++, I can only speak C. Another concern is longevity and\
-maintainability, if tomorrow Wayfire goes away I will remain with no options, that is why I decided\
-to make my own compositor and implement all the functionality I need and I will be glad if someone\
-finds it useful too. Another thing, I build it on Debian 13 stable (not testing) so a new version is\
+which is crucial for me. There was only GNOME and Wayfire, the  first one is not my taste at all.\
+
+Zooming in GNOME is not ideal. Wayfire is great and  zooming  works  well  but I wanted to implement\
+some  functionality  and  it  was  C++,  I  can  only  speak  C.  Another  concern  is longevity and\
+maintainability, if tomorrow Wayfire goes away I will  remain with no options, that is why I decided\
+to make my own compositor and implement all the functionality  I need  and I will  be glad if someone\
+finds it useful too. Another thing, I build it on Debian  13 stable  (not testing) so a new version is\
 expected once every two years (following Debian stable release cycle). Woodland has no reliance on any\
 particular Desktop Environment, Desktop Shell or session. Also it does not depend on any UI toolkits such as Qt or GTK.
 
@@ -62,21 +63,21 @@ vivarium\
 
   1. To build the project you need to install the following libs:
 
-	gcc
-	bash
-	make
-	pkgconf
-	libstb-dev
-	libdrm-dev
-	librsvg2-dev
-	libinput-dev
-	libcairo2-dev
-	libdbus-1-dev
-	linux-libc-dev
-	libwayland-dev
-	libpixman-1-dev
-	libxkbcommon-dev
-	libwlroots-0.18-dev
+		gcc
+		bash
+		make
+		pkgconf
+		libstb-dev
+		libdrm-dev
+		librsvg2-dev
+		libinput-dev
+		libcairo2-dev
+		libdbus-1-dev
+		linux-libc-dev
+		libwayland-dev
+		libpixman-1-dev
+		libxkbcommon-dev
+	        libwlroots-0.18-dev
 
   2. Open a terminal in the extracted folder and run:
  
