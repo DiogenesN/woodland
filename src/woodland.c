@@ -2862,12 +2862,12 @@ static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
 	char app_id_height[128];
 	snprintf(app_id_width, sizeof(app_id_width), "%s_width", toplevel->app_id);
 	snprintf(app_id_height, sizeof(app_id_height), "%s_height", toplevel->app_id);
-	fprintf(stderr, "app_id_width: %s\n", app_id_width);
-	fprintf(stderr, "app_id_height: %s\n", app_id_height);
+	///fprintf(stderr, "app_id_width: %s\n", app_id_width);
+	///fprintf(stderr, "app_id_height: %s\n", app_id_height);
 	int LastToplevelWidth = get_int_value_from_conf(toplevel->server->config_sizes, app_id_width);
 	int LastToplevelHeight = get_int_value_from_conf(toplevel->server->config_sizes, app_id_height);
-	fprintf(stderr, "LastToplevelWidth: %d\n", LastToplevelWidth);
-	fprintf(stderr, "LastToplevelHeight: %d\n", LastToplevelHeight);
+	///fprintf(stderr, "LastToplevelWidth: %d\n", LastToplevelWidth);
+	///fprintf(stderr, "LastToplevelHeight: %d\n", LastToplevelHeight);
 
 	// If there are any size changes then remove those old lines
 	if ((LastToplevelWidth != toplevel_box.width) || (LastToplevelHeight != toplevel_box.height)) {
