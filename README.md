@@ -59,6 +59,10 @@ vivarium\
    4. Time widget, clicking on it opens up a calendar for the current month.
    5. Network widget, clicking on it opens up a network applet.
 
+# Bugs
+
+   Whenever you click on the network icon on the panel, the compositor would freeze for exactly 10 seconds, this is done in order to scan the available wifi networks.
+
 # Installation
 
   1. To build the project you need to install the following libs:
