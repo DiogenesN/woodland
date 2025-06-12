@@ -34,18 +34,6 @@
  *************** Helper functions *************** 
  */
 
-static struct wlr_linux_dmabuf_feedback_v1_tranche default_tranche = {
-	.target_device = 0,  // Auto-detect GPU
-	.flags = 0,		  // Default flags
-	///.formats = (struct wlr_drm_format_set) {0},
-};
-
-static struct wlr_linux_dmabuf_feedback_v1 default_feedback = {
-	.main_device = 0,		   
-	.tranches.data = &default_tranche,  
-	.tranches.size = 1,		 
-};
-
 // Refresh Wi-Fi network list
 static void refresh_networks(struct woodland_server *server) {
 	// Refreshing the list of available wifi networks
@@ -3117,6 +3105,21 @@ static void server_new_xdg_popup(struct wl_listener *listener, void *data) {
 	wl_signal_add(&xdg_popup->events.destroy, &popup->destroy);
 }
 
+/* DRM Lease */
+static void handle_drm_lease_request(struct wl_listener *listener, void *data) {
+	/*
+	 * We only offer non-desktop outputs, but in the future we might want to do
+	 * more logic here.
+	 */
+	(void)listener;
+	struct wlr_drm_lease_request_v1 *req = data;
+	struct wlr_drm_lease_v1 *lease = wlr_drm_lease_request_v1_grant(req);
+	if (!lease) {
+		wlr_log(WLR_ERROR, "Failed to grant lease request");
+		wlr_drm_lease_request_v1_reject(req);
+	}
+}
+
 /* Run a terminal at startup of no startup command specified */
 // Function to find and open the first available terminal emulator
 static void startup_terminal(void) {
@@ -3449,29 +3452,27 @@ int main(int argc, char *argv[]) {
 	}
 	wlr_renderer_init_wl_display(server.renderer, server.wl_display);
 
-	// Autocreates an allocator for us.
-	// The allocator is the bridge between the renderer and the backend. It
-	// handles the buffer creation, allowing wlroots to render onto the screen 
-	server.allocator = wlr_allocator_autocreate(server.backend, server.renderer);
-	if (!server.allocator) {
-		wlr_log(WLR_ERROR, "Failed to create allocator!");
-		return 1;
+	if (wlr_renderer_get_texture_formats(server.renderer, WLR_BUFFER_CAP_DMABUF) != NULL) {
+		wlr_drm_create(server.wl_display, server.renderer);
+		server.linux_dmabuf = wlr_linux_dmabuf_v1_create_with_renderer(server.wl_display,
+																		5,
+																		server.renderer);
+	}
+	if (wlr_renderer_get_drm_fd(server.renderer) >= 0) {
+		wlr_linux_drm_syncobj_manager_v1_create(server.wl_display,
+												1,
+												wlr_renderer_get_drm_fd(server.renderer));
 	}
 
-	// This creates some hands-off wlroots interfaces. The compositor is
-	// necessary for clients to allocate surfaces, the subcompositor allows to
-	// assign the role of subsurfaces to surfaces and the data device manager
-	// handles the clipboard. Each of these wlroots interfaces has room for you
-	// to dig your fingers in and play with their behavior if you want. Note that
-	// the clients cannot set the selection directly without compositor approval,
-	// see the handling of the request_set_selection event below.
-	server.compositor = wlr_compositor_create(server.wl_display, 5, server.renderer);
-	if (!server.compositor) {
-		wlr_log(WLR_ERROR, "Failed to create compositor!");
-		return 1;
+	server.drm_lease_manager = wlr_drm_lease_v1_manager_create(server.wl_display, server.backend);
+	if (server.drm_lease_manager) {
+		server.drm_lease_request.notify = handle_drm_lease_request;
+		wl_signal_add(&server.drm_lease_manager->events.request, &server.drm_lease_request);
 	}
-	wlr_subcompositor_create(server.wl_display);
-	wlr_data_device_manager_create(server.wl_display);
+	else {
+		wlr_log(WLR_DEBUG, "Failed to create wlr_drm_lease_device_v1");
+		wlr_log(WLR_INFO, "VR will not be available");
+	}
 
 	// Creates an output layout, which a wlroots utility for working with an
 	// arrangement of screens in a physical layout. */
@@ -3503,6 +3504,34 @@ int main(int argc, char *argv[]) {
 	server.scene = wlr_scene_create();
 	server.scene_layout = wlr_scene_attach_output_layout(server.scene, server.output_layout);
 	
+	if (server.linux_dmabuf) {
+		wlr_scene_set_linux_dmabuf_v1(server.scene, server.linux_dmabuf);
+	}
+
+	// Autocreates an allocator for us.
+	// The allocator is the bridge between the renderer and the backend. It
+	// handles the buffer creation, allowing wlroots to render onto the screen 
+	server.allocator = wlr_allocator_autocreate(server.backend, server.renderer);
+	if (!server.allocator) {
+		wlr_log(WLR_ERROR, "Failed to create allocator!");
+		return 1;
+	}
+
+	// This creates some hands-off wlroots interfaces. The compositor is
+	// necessary for clients to allocate surfaces, the subcompositor allows to
+	// assign the role of subsurfaces to surfaces and the data device manager
+	// handles the clipboard. Each of these wlroots interfaces has room for you
+	// to dig your fingers in and play with their behavior if you want. Note that
+	// the clients cannot set the selection directly without compositor approval,
+	// see the handling of the request_set_selection event below.
+	server.compositor = wlr_compositor_create(server.wl_display, 5, server.renderer);
+	if (!server.compositor) {
+		wlr_log(WLR_ERROR, "Failed to create compositor!");
+		return 1;
+	}
+	wlr_subcompositor_create(server.wl_display);
+	wlr_data_device_manager_create(server.wl_display);
+
 	// Set up xdg-shell version 3. The xdg-shell is a Wayland protocol which is
 	// used for application windows. For more detail on shells, refer to
 	// https://drewdevault.com/2018/07/29/Wayland-shells.html.
@@ -3592,10 +3621,16 @@ int main(int argc, char *argv[]) {
 	server.request_start_drag.notify = seat_request_start_drag;
 	wl_signal_add(&server.seat->events.request_start_drag, &server.request_start_drag);
 
+	/*** Screencopy ***/
 	if (!wlr_screencopy_manager_v1_create(server.wl_display)) {
 		wlr_log(WLR_ERROR, "Failed to create screencopy manager!");
 		return -1;
 	}
+
+	/*** Presentation ***/
+	wlr_presentation_create(server.wl_display, server.backend);
+	wlr_export_dmabuf_manager_v1_create(server.wl_display);
+	wlr_data_control_manager_v1_create(server.wl_display);
 
 	/*** Create virtual keyboard manager and configure a listener for new virtual keyboards. */
 	server.virtual_keyboard_mgr = wlr_virtual_keyboard_manager_v1_create(server.wl_display);
@@ -3625,42 +3660,6 @@ int main(int argc, char *argv[]) {
 		wl_display_destroy(server.wl_display);
 		return 1;
 	}
-
-	{
-		struct wlr_drm_format_set formats = {0}; // Initialize DRM format set
-
-		// Add a valid DRM format and modifier
-		if (!wlr_drm_format_set_add(&formats, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_INVALID)) {
-			default_tranche.formats = formats;
-			wlr_log(WLR_ERROR, "Failed to add DRM_FORMAT_ARGB8888 to DMABUF feedback");
-			return 1;
-		}
-		else {
-			wlr_log(WLR_DEBUG, "Successfully added DRM_FORMAT_ARGB8888 with modifier DRM_FORMAT_MOD_INVALID");
-		}
-
-		// Assign formats to default tranche
-		default_tranche.formats = formats;
-
-		// Validate tranche setup
-		if (default_tranche.formats.len == 0) {
-			wlr_log(WLR_ERROR, "Default tranche has no valid formats!");
-			return 1;
-		}
-
-		// Log feedback details before creating DMABUF object
-		wlr_log(WLR_DEBUG, "DMABUF feedback setup:");
-		wlr_log(WLR_DEBUG, "Main device: %lx", (unsigned long)default_feedback.main_device);
-		wlr_log(WLR_DEBUG, "Tranches size: %zu", default_feedback.tranches.size);
-
-		server.linux_dmabuf = wlr_linux_dmabuf_v1_create_with_renderer(server.wl_display, 3, server.renderer);
-		if (!server.linux_dmabuf) {
-			wlr_log(WLR_ERROR, "Failed to create Linux DMABUF object");
-			return 1;
-		}
-	}
-
-	wlr_log(WLR_DEBUG, "Initialized DMA-BUF support");
 
 	// Set the WAYLAND_DISPLAY environment variable to our socket and run the
 	// startup command if requested. */

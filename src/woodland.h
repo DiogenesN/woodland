@@ -33,6 +33,9 @@ struct woodland_server {
 	struct wlr_scene_buffer *calendar_buffer;
 	struct wlr_scene_buffer *network_buffer;
 	struct wlr_scene_output *panel_scene_output;
+	// DRM Lease
+	struct wlr_drm_lease_v1_manager *drm_lease_manager;
+	struct wl_listener drm_lease_request;
 	// Windowlist
 	struct wlr_scene_buffer *titles_scene_buffer;
 	toplevel_info toplevel_info;

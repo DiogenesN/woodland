@@ -30,6 +30,7 @@
 #include <wlroots-0.18/wlr/backend.h>
 #include <librsvg-2.0/librsvg/rsvg.h>
 #include <wlroots-0.18/wlr/util/log.h>
+#include <wlroots-0.18/wlr/types/wlr_drm.h>
 #include <wlroots-0.18/wlr/types/wlr_seat.h>
 #include <wlroots-0.18/wlr/types/wlr_scene.h>
 #include <wlroots-0.18/wlr/backend/session.h>
@@ -43,6 +44,7 @@
 #include <wlroots-0.18/wlr/types/wlr_viewporter.h>
 #include <wlroots-0.18/wlr/types/wlr_data_device.h>
 #include <wlroots-0.18/wlr/types/wlr_input_device.h>
+#include <wlroots-0.18/wlr/types/wlr_drm_lease_v1.h>
 #include <wlroots-0.18/wlr/types/wlr_xdg_output_v1.h>
 #include <wlroots-0.18/wlr/types/wlr_screencopy_v1.h>
 #include <wlroots-0.18/wlr/types/wlr_output_layout.h>
@@ -50,9 +52,13 @@
 #include <wlroots-0.18/wlr/types/wlr_xcursor_manager.h>
 #include <wlroots-0.18/wlr/types/wlr_data_control_v1.h>
 #include <wlroots-0.18/wlr/types/wlr_linux_dmabuf_v1.h>
+#include <wlroots-0.18/wlr/types/wlr_export_dmabuf_v1.h>
+#include <wlroots-0.18/wlr/types/wlr_export_dmabuf_v1.h>
+#include <wlroots-0.18/wlr/types/wlr_presentation_time.h>
 #include <wlroots-0.18/wlr/types/wlr_relative_pointer_v1.h>
 #include <wlroots-0.18/wlr/types/wlr_virtual_keyboard_v1.h>
 #include <wlroots-0.18/wlr/types/wlr_output_management_v1.h>
+#include <wlroots-0.18/wlr/types/wlr_linux_drm_syncobj_v1.h>
 #include <wlroots-0.18/wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlroots-0.18/wlr/types/wlr_foreign_toplevel_management_v1.h>
 
