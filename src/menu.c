@@ -166,5 +166,8 @@ int show_menu(struct woodland_server *server) {
 			server->m_cairo_surface = NULL;
 		}
 	}
+	
+	server->menu_width = width;
+	server->menu_height = height;
 	return 0;
 }

@@ -143,6 +143,8 @@ struct woodland_server {
 	// Menu dialog
 	cairo_surface_t *m_cairo_surface;
 	cairo_t *m_cr;
+	int menu_width;
+	int menu_height;
 	int menu_dialog_size;
 	size_t menuPosition;
 	bool menu_clicked;

@@ -1495,6 +1495,9 @@ static void server_cursor_motion(struct wl_listener *listener, void *data) {
 			server->menu_ly_hovered = false;
 			cursor_in_menu_list_region = false;
 		}
+		else {
+			server->menu_ly_hovered = false;
+		}
 		cursor_in_menu_list_region = in_menu_region;
 	}
 
@@ -1823,7 +1826,6 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 		// Handle case when no toplevel is found
 		fprintf(stderr, "Warning: No toplevel found at cursor position\n");
 	}
-
 	// Open the calendar
 	if (event->button == BTN_LEFT && server->time_hovered && server->time_is_clicked) {
 		///fprintf(stderr, "Closing calendar\n");
@@ -1904,24 +1906,28 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 		(int)server->cursor->x > (output_box.width - 3) &&
 		(int)server->cursor->y < 3) {
 
-		// Opening window list dialog
+		// Opening window list dialog windowlist
 		///fprintf(stderr, "Windowlist clicked.\n");
 		// Window list
 		server->titles_clicked = true;
 		list_titles(server);
 	}
-	else if (event->button == BTN_LEFT && server->titles_clicked && server->titles_ly_hovered) {
+	else if (event->button == BTN_LEFT && server->titles_clicked && server->titles_ly_hovered &&
+					strcmp(server->toplevel_info.app_id[server->TitlesPosition], "nil(NULL)") != 0) {
 		// Closing window list dialog
 		///fprintf(stderr, "toplevel_info->titles[%d] = %s\n",
 		///		server->TitlesPosition,
 		///		server->toplevel_info.titles[server->TitlesPosition]);
 		server->titles_clicked = false;
 		///server->titles_ly_hovered = false;
+		struct woodland_view *iter = NULL;
 		struct woodland_view *found_toplevel = NULL;
 		if (!wl_list_empty(&server->toplevels)) {
-			struct woodland_view *iter;
 			wl_list_for_each(iter, &server->toplevels, link) {
-				if (iter && strcmp(iter->xdg_toplevel->app_id,
+				if (iter &&
+					iter->xdg_toplevel->app_id &&
+					server->toplevel_info.app_id[server->TitlesPosition] &&
+					strcmp(iter->xdg_toplevel->app_id,
 					server->toplevel_info.app_id[server->TitlesPosition]) == 0) {
 					found_toplevel = iter;
 					///fprintf(stderr, "iter->xdg_toplevel->app_id: %s\n", iter->xdg_toplevel->app_id);
@@ -1953,7 +1959,7 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 	// Menu clicked
 	if (event->button == BTN_LEFT &&
 		!server->menu_clicked &&
-		(int)server->cursor->x < 30 &&
+		(int)server->cursor->x < 30 && 
 		(int)server->cursor->y > (output_box.height - 30)) {
 
 		// Opening window list dialog
@@ -1962,7 +1968,12 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 		server->menu_clicked = true;
 		show_menu(server);
 	}
-	else if (event->button == BTN_LEFT && server->menu_clicked && server->menu_ly_hovered) {
+	else if (event->button == BTN_LEFT &&
+			server->menu_clicked &&
+			server->menu_ly_hovered &&
+			(int)server->cursor->x < server->menu_width && 
+			(int)server->cursor->y > (output_box.height - server->menu_height) &&
+			(int)server->cursor->y < (output_box.height - 3)) {
 		// Closing menu list dialog
 		///fprintf(stderr, "Closing menu.\n");
 		server->menu_clicked = false;
@@ -1987,7 +1998,13 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 			}
 		}
 	}
-	else if (event->button == BTN_LEFT && server->menu_clicked && !server->menu_ly_hovered) {
+	else if ((event->button == BTN_LEFT &&
+			server->menu_clicked) ||
+			(event->button == BTN_LEFT &&
+			server->menu_clicked &&
+			(int)server->cursor->x > server->menu_width && 
+			(int)server->cursor->y < (output_box.height - server->menu_height) &&
+			(int)server->cursor->y > (output_box.height - 30))) {
 		if (server->menu_scene_buffer) {
 			wlr_scene_node_destroy(&server->menu_scene_buffer->node);
 			server->menu_scene_buffer = NULL;
@@ -2941,6 +2958,11 @@ static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
 	WL_LIST_SAFE_REMOVE(&toplevel->request_fullscreen.link);
 	// Free the toplevel
 	if (toplevel) {
+		for (int i = 0; toplevel->server->toplevel_info.app_id[i] != NULL; i++) {
+			// We need to set all the fields to NULL to prevent crash when activating the next toplevel
+			toplevel->server->toplevel_info.app_id[i] = "nil(NULL)";
+			toplevel->server->toplevel_info.titles[i] = "nil(NULL)";
+		}
 		free(toplevel);
 		toplevel = NULL;
 	}
@@ -3210,6 +3232,7 @@ static int process_startup_commands(void *data) {
 		for (int i = 0; i < num_commands; ++i) {
 			wlr_log(WLR_INFO, "Launching command: %s", command[i]);
 			run_cmd(command[i]);
+			usleep(1000);
 		}
 	}
 	wl_event_source_remove(server->autostart_timer);
