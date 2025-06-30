@@ -94,10 +94,6 @@ vivarium\
 		 sudo make install
 		 
 		 (if you just want to test it then run: make run)
-## Tips
-
-  You will have to do a lot of work to adjust the correct header files paths in wlroots.\
-  Copy the header files from 'include' directory to '/usr/include/wlroots-0.18/wlr/types/'
 
 # Usage
 
