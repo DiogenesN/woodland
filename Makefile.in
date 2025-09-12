@@ -6,6 +6,7 @@ CFLAGS += -I/usr/include/librsvg-2.0 -I/usr/lib/x86_64-linux-gnu/librsvg-2.0/inc
 CFLAGS += -I/usr/include/cairo -I/usr/lib/x86_64-linux-gnu/cairo/include
 CFLAGS += -I/usr/include/gdk-pixbuf-2.0 -I/usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/include
 CFLAGS += -I/usr/include/wlroots-0.18 -I/usr/lib/x86_64-linux-gnu/wlroots-0.18/include
+CFLAGS += -I/usr/include/pixman-1
 LDFLAGS = -lm
 LDFLAGS += $(shell pkg-config --libs stb cairo dbus-1 librsvg-2.0 wlroots-0.18 libinput pixman-1 xkbcommon wayland-server)
 CFLAGS += $(shell pkg-config --cflags stb cairo dbus-1 librsvg-2.0 wlroots-0.18 libinput pixman-1 xkbcommon wayland-server)
