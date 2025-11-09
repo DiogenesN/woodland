@@ -60,8 +60,14 @@ vivarium\
    5. Network widget, clicking on it opens up a network applet.
 
 # Bugs
+   1. If it fails to start from another Wayland compositor then make the following changes in: ~/.config/woodland/woodland.ini
+      Change:
+      tap_to_click = enable
 
-   Whenever you click on the network icon on the panel, the compositor would freeze for exactly 10 seconds, this is done in order to scan the available wifi networks.
+      To:
+      tap_to_click = disable
+   
+   2. Whenever you click on the network icon on the panel, the compositor would freeze for exactly 10 seconds, this is done in order to scan the available wifi networks.
 
 # Installation
 
