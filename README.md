@@ -15,6 +15,8 @@ finds it useful too. Another thing, I build it on Debian  13 stable  (not testin
 expected once every two years (following Debian stable release cycle). Woodland has no reliance on any
 particular Desktop Environment, Desktop Shell or session. Also it does not depend on any UI toolkits such as Qt or GTK.
 
+For Arch users see (thanks to TrialnError): https://aur.archlinux.org/packages/woodland
+
 Recommended quick app launcher:
 
 Application launcher:
