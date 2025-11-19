@@ -165,7 +165,7 @@ Woodland creates the following configuration files:
   2. Brightness
  
     [ Brightness ]
-    In order for backlight to worl you have to do the following:
+    In order for backlight to work you have to do the following:
 
     sudo usermod -aG video $USER
     sudo touch /etc/udev/rules.d/90-backlight.rules
@@ -182,7 +182,7 @@ Woodland creates the following configuration files:
 	Provide the full path to the image.
 	background = /home/username/image.png
 
-  4. Touchpan tap-to-click
+  4. Touchpad tap-to-click
 
     [ Touchpad ]
     Enable or disable tap to click (default enable).
