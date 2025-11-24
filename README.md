@@ -70,6 +70,7 @@ vivarium\
       tap_to_click = disable
    
    2. Whenever you click on the network icon on the panel, the compositor would freeze for exactly 10 seconds, this is done in order to scan the available wifi networks.
+   3. At this stage the 'zwlr_layer_shell_v1' protocol is not implemented so some stuff like waybar, slurp won't work. You can still take screenshots with grim only without slurp.
 
 # Installation
 
