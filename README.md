@@ -61,6 +61,10 @@ vivarium\
    4. Time widget, clicking on it opens up a calendar for the current month.
    5. Network widget, clicking on it opens up a network applet.
 
+# Note
+  Makefile.in contains the gcc flag  -march=native. This will compile woodland for your CPU on this machine and will make your binary incompatible if you try to run it on other machines with a different CPU. If you want compatibility then remove this flag. 
+
+
 # Bugs
    1. If it fails to start from another Wayland compositor then make the following changes in: ~/.config/woodland/woodland.ini\
       Change:\
