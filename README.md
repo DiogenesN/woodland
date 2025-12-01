@@ -164,11 +164,11 @@ Woodland creates the following configuration files:
 
     [ Welcome screen ]
     If you have any weclome screen application then it goes here,
-    for instance you can use my welcome screen application like this:
+    for instance you can use my welcome screen application like this:\
     welcome_screen = welcomescreen --resolution 1920x1080
 
   2. Brightness
- 
+
     [ Brightness ]
     In order for backlight to work you have to do the following:
 
@@ -225,6 +225,7 @@ Woodland creates the following configuration files:
 	<Super+Esc> to log out
 	<Super+x> to close the current window
 	<Alt+Tab> to switch to the next window
+	<Alt+Ctrl+Tab> to switch to the previous window
 	Example of user defined shortcuts:
 	NOTE: You have to preserve binding_ and command_ prefixes.
 	binding_thunar = WLR_MODIFIER_LOGO XKB_KEY_f
@@ -282,10 +283,20 @@ Woodland creates the following configuration files:
     menu_item = Power Off
     menu_item = systemctl poweroff
 
+	You can set the font size of menu items like this:
+	mn_font_size = 22
+
+	You can define how large is the clicking area to activate the menu:
+	mn_active_area_x = 30
+	mn_active_area_y = 30
+
   12. Window list
 
     [ Windowlist ]
     Clicking on the top right corner of the screen shows a window list.
+    You can define how large is the clicking area to activate the windowlist:
+	wl_active_area_x = 3
+	wl_active_area_y = 3
 
   13. Panel
 
