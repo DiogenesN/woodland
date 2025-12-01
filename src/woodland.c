@@ -259,17 +259,13 @@ static void focus_toplevel(struct woodland_view *toplevel) {
 
 	// Only reorder if we're not in cycling mode.
 	if (!server->cycling_mode) {
-		WL_LIST_SAFE_REMOVE(&toplevel->link);
+		// This is the MRU update. Skipped during Alt+Tab cycle.
+		WL_LIST_SAFE_REMOVE(&toplevel->link); 
 		wl_list_insert(&server->toplevels, &toplevel->link);
-		// You might do the reordering only once.
 	}
 
 	wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
-	// Do not forcibly reinsert if cycling_mode is active.
-	if (!server->cycling_mode) {
-		WL_LIST_SAFE_REMOVE(&toplevel->link);
-		wl_list_insert(&server->toplevels, &toplevel->link);
-	}
+
 	wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, true);
 	if (kbd) {
 		wlr_seat_keyboard_notify_enter(seat, surface, kbd->keycodes, kbd->num_keycodes, &kbd->modifiers);
@@ -284,7 +280,8 @@ static bool cycle_windows(struct woodland_server *server) {
 		return false;
 	}
 
-	server->cycling_mode = true;
+	// This must be true for focus_toplevel to skip reordering
+	server->cycling_mode = true; 
 
 	struct wlr_surface *focused = server->seat->keyboard_state.focused_surface;
 	struct woodland_view *current = NULL;
@@ -309,7 +306,9 @@ static bool cycle_windows(struct woodland_server *server) {
 	do {
 		if (!iter->minimized) {
 			focus_toplevel(iter);
-			server->cycling_mode = false;
+			// We keep cycling_mode = true here.
+			// The MRU update happens when Alt is released (in a separate key release handler).
+			server->cycling_mode = false; // Only set false when we exit
 			return true;
 		}
 		iter = wl_container_of(iter->link.next, iter, link);
@@ -454,15 +453,25 @@ static void seat_start_drag(struct wl_listener *listener, void *data) {
 }
 
 /* Pointer constraints */
+static void deactivate_constraint(struct woodland_server *server) {
+	if (server->active_pointer_constraint) {
+		// The constraint is alive, but we are disabling it logicially
+		wlr_pointer_constraint_v1_send_deactivated(server->active_pointer_constraint);
+    }
+}
+
 static void handle_pointer_constraint_destroy(struct wl_listener *listener, void *data) {
 	struct woodland_server *server = wl_container_of(listener, server, constraint_destroy);
 	struct wlr_pointer_constraint_v1 *constraint = data;
 
-	// Deactivate the constraint
-	wlr_pointer_constraint_v1_send_deactivated(constraint);
+	// Removing the listener otherwise the list node remains 
+	// pointing to this listener even though the event cycle is finishing.
+	wl_list_remove(&server->constraint_destroy.link);
 
-	// Clean up
-	server->active_pointer_constraint = NULL;
+	// Clean up your internal reference.
+	if (server->active_pointer_constraint == constraint) {
+		server->active_pointer_constraint = NULL;
+	}
 }
 
 static void handle_new_pointer_constraint(struct wl_listener *listener, void *data) {
@@ -618,8 +627,15 @@ static bool handle_keybinding_alt(struct woodland_server *server, xkb_keysym_t s
 	struct woodland_view *next_view = wl_container_of(current_view->link.next, next_view, link);
 	switch (sym) {
 	case XKB_KEY_Tab: // Alt+Tab cycle to the next view
+		// Deactivate the constraints if present
+		deactivate_constraint(server);
 		server->keybind_handled = true;
-		cycle_windows(server);
+		if (!server->lctrl_key_down) {
+			cycle_windows(server);
+		}
+		else {
+			cycle_windows_reverse(server);
+		}
 		break;
 	default:
 		// Executing user defined shortcuts from config file
@@ -652,22 +668,30 @@ static bool handle_keybinding_shift(struct woodland_server *server, xkb_keysym_t
  * This function assumes Super is held down.
  */
 static bool handle_keybinding_super(struct woodland_server *server, xkb_keysym_t sym) {
-	// Get the current view and the next view
-	struct woodland_view *current_view = wl_container_of(server->toplevels.next, current_view, link);
-	struct woodland_view *next_view = wl_container_of(current_view->link.next, next_view, link);
+	// Get the actual focused surface from the seat
+	struct wlr_surface *focused_surface = server->seat->keyboard_state.focused_surface;
+	
+	// Try to resolve the view/toplevel from that surface
+	struct wlr_xdg_toplevel *focused_xdg_toplevel = NULL;
+
+	if (focused_surface) {
+		// Your code uses this helper in focus_toplevel, so I assume it exists:
+		focused_xdg_toplevel = wlr_xdg_toplevel_try_from_wlr_surface(focused_surface);
+	}
+
 	switch (sym) {
-	case XKB_KEY_Escape: // Super+Esc Log out from compositor
+	case XKB_KEY_Escape: // Super+Esc Log out
 		server->keybind_handled = true;
 		wl_display_terminate(server->wl_display);
 		break;
+
 	case XKB_KEY_x: // Super+x close current active window
-		if (!wl_list_empty(&server->toplevels)) {
+		if (focused_xdg_toplevel) {
 			server->keybind_handled = true;
-			wlr_xdg_toplevel_send_close(current_view->xdg_toplevel);
+			wlr_xdg_toplevel_send_close(focused_xdg_toplevel);
 		}
 		break;
 	default:
-		// Executing user defined shortcuts from config file
 		process_keybindings(server, server->config, "WLR_MODIFIER_LOGO", sym);
 		break;
 	}
@@ -758,6 +782,10 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 					}
 				}
 			}
+			// Exit constrained pointer area (in games)
+			else if (syms[i] == XKB_KEY_Escape) {
+				deactivate_constraint(keyboard->server);
+			}
 			// Multimedia keys support
 			else if (syms[i] == XKB_KEY_XF86AudioPlay || syms[i] == XKB_KEY_XF86AudioPause ||
 				syms[i] == XKB_KEY_XF86AudioMute) {
@@ -825,6 +853,13 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 					wlr_output_schedule_frame(output->wlr_output);
 				}
 			}
+		}
+		// Setting a flag when right ctrl+tab key is pressed to use the reverse cycling.
+		if (syms[i] == XKB_KEY_Control_L && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+			keyboard->server->lctrl_key_down = true;
+		}
+		else if (syms[i] == XKB_KEY_Control_L && event->state == WL_KEYBOARD_KEY_STATE_RELEASED) {
+			keyboard->server->lctrl_key_down = false;
 		}
 		// Handle compositor keybindings
 		else if (keyname) {
@@ -1903,8 +1938,8 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 
 	if (event->button == BTN_LEFT &&
 		!server->titles_clicked &&
-		(int)server->cursor->x > (output_box.width - 3) &&
-		(int)server->cursor->y < 3) {
+		(int)server->cursor->x > (output_box.width - server->wl_active_area_x) &&
+		(int)server->cursor->y < server->wl_active_area_y) {
 
 		// Opening window list dialog windowlist
 		///fprintf(stderr, "Windowlist clicked.\n");
@@ -1959,10 +1994,9 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 	// Menu clicked
 	if (event->button == BTN_LEFT &&
 		!server->menu_clicked &&
-		(int)server->cursor->x < 30 && 
-		(int)server->cursor->y > (output_box.height - 30)) {
-
-		// Opening window list dialog
+		(int)server->cursor->x < server->mn_active_area_x && 
+		(int)server->cursor->y > (output_box.height - server->mn_active_area_y)) {
+		// Opening menu dialog
 		///fprintf(stderr, "Menu opened.\n");
 		// Menu list
 		server->menu_clicked = true;
@@ -2368,6 +2402,70 @@ static void handle_close(struct wl_listener *listener, void *data) {
 		return;
 	}
 	wlr_xdg_toplevel_send_close(toplevel->xdg_toplevel);
+}
+
+static void xdg_toplevel_request_maximize(struct wl_listener *listener, void *data) {
+	(void)data;
+	struct woodland_view *toplevel = wl_container_of(listener, toplevel, request_maximize);
+	struct woodland_server *server = toplevel->server;
+
+	if (!toplevel->xdg_toplevel->base->initialized) {
+		return;
+	}
+
+	// Toggle maximize state
+	bool maximized = !toplevel->maximized;
+	toplevel->maximized = maximized;
+
+	if (maximized) {
+		// Save current geometry (position and size)
+		toplevel->saved_geometry.x = toplevel->scene_tree->node.x;
+		toplevel->saved_geometry.y = toplevel->scene_tree->node.y;
+		toplevel->saved_geometry.width = toplevel->xdg_toplevel->current.width;
+		toplevel->saved_geometry.height = toplevel->xdg_toplevel->current.height;
+
+		// Set maximized state
+		wlr_xdg_toplevel_set_maximized(toplevel->xdg_toplevel, true);
+		
+		// Set new size to the maximum size, the size of the whole output/screen
+		// For simplicity, i use the same dimensions as fullscreen here.
+		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+								server->transformed_width,
+								server->transformed_height);
+		
+		// Set position to the top-left of the screen
+		wlr_scene_node_set_position(&toplevel->scene_tree->node, 0, 0);
+	}
+	else {
+		// Restore original state
+		wlr_xdg_toplevel_set_maximized(toplevel->xdg_toplevel, false);
+		
+		// Restore original size
+		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+								toplevel->saved_geometry.width,
+								toplevel->saved_geometry.height);
+		
+		// Restore original position
+		wlr_scene_node_set_position(&toplevel->scene_tree->node,
+									toplevel->saved_geometry.x,
+									toplevel->saved_geometry.y);
+	}
+
+
+	// Set the toplevel as resizing as a workaround for scale modifying the size of some toplevels
+	wlr_xdg_toplevel_set_resizing(toplevel->xdg_toplevel, true);
+
+	// Send configure event immediately
+	wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
+
+	// Force immediate redraw
+	struct woodland_output *output;
+	wl_list_for_each(output, &server->outputs, link) {
+		wlr_scene_output_commit(output->scene_output, NULL);
+		struct timespec now;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		wlr_scene_output_send_frame_done(output->scene_output, &now);
+	}
 }
 
 static void xdg_toplevel_request_fullscreen(struct wl_listener *listener, void *data) {
@@ -2955,6 +3053,7 @@ static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
 	WL_LIST_SAFE_REMOVE(&toplevel->request_move.link);
 	WL_LIST_SAFE_REMOVE(&toplevel->request_resize.link);
 	WL_LIST_SAFE_REMOVE(&toplevel->request_minimize.link);
+	WL_LIST_SAFE_REMOVE(&toplevel->request_maximize.link);
 	WL_LIST_SAFE_REMOVE(&toplevel->request_fullscreen.link);
 	// Free the toplevel
 	if (toplevel) {
@@ -3001,6 +3100,9 @@ static void server_new_xdg_toplevel(struct wl_listener *listener, void *data) {
 
 	toplevel->request_minimize.notify = xdg_toplevel_request_minimize;
 	wl_signal_add(&xdg_toplevel->events.request_minimize, &toplevel->request_minimize);
+
+	toplevel->request_maximize.notify = xdg_toplevel_request_maximize;
+	wl_signal_add(&xdg_toplevel->events.request_maximize, &toplevel->request_maximize);
 
 	toplevel->request_fullscreen.notify = xdg_toplevel_request_fullscreen;
 	wl_signal_add(&xdg_toplevel->events.request_fullscreen, &toplevel->request_fullscreen);
@@ -3437,6 +3539,14 @@ int main(int argc, char *argv[]) {
 	server.zoom_factor = 1.0;
 	server.zoom_speed = get_double_value_from_conf(server.config, "zoom_speed");
 	server.zoom_speed_m = server.zoom_speed;
+
+	/* Getting windowlist variables */
+	server.wl_active_area_x = get_int_value_from_conf(server.config, "wl_active_area_x");
+	server.wl_active_area_y = get_int_value_from_conf(server.config, "wl_active_area_y");
+
+	/* Getting menu variables */
+	server.mn_active_area_x = get_int_value_from_conf(server.config, "mn_active_area_x");
+	server.mn_active_area_y = get_int_value_from_conf(server.config, "mn_active_area_y");
 
 	/* Getting welcome screen command */
 	char *welcome_screen_CMD = get_char_value_from_conf(server.config, "welcome_screen");
