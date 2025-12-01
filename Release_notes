@@ -1,0 +1,25 @@
+woodland 2.0.5
+
+Fixed bugs:
+	1. Crashing when exiting the pointer-constraint area in games
+	   (double-free caused by using wlr_pointer_constraint_v1_send_deactivated
+	   in the destroy handler).
+
+	2. Switching windows via Alt+Tab would not update the stack list, and
+	   attempting to close the current window with Super+x would end up
+	   closing the previous one.
+
+New features:
+	1. Maximizing windows.
+
+	2. The top-right-corner windowlist widget clicking area can now be set
+	   by the user in woodland.ini.
+
+	3. The bottom-left-corner menu-items clicking area can now be set by
+	   the user in woodland.ini.
+	   It is now also possible to configure the menu-items font size.
+
+	4. The alternative path '/usr/local/include' was added for searching
+	   xkbcommon-keysyms.h.
+
+	5. Alt+Ctrl+Tab was added for reverse stack window switching.
