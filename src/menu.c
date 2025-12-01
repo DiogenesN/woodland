@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "woodland.h"
+#include "getvaluefromconf.h"
 
 static struct wlr_drm_format format = {
 	.format = DRM_FORMAT_ARGB8888,
@@ -33,9 +34,11 @@ int show_menu(struct woodland_server *server) {
 
 	FILE *file = fopen(config, "r");
 	if (file == NULL) {
-		perror("Error opening file");
+		perror("Error opening config file in menu");
 		return 1;
 	}
+	
+	int mn_font_size = get_int_value_from_conf(config, "mn_font_size");
 
 	char line[1024];
 	while (fgets(line, sizeof(line), file) != NULL) {
@@ -98,7 +101,7 @@ int show_menu(struct woodland_server *server) {
 	// Draw buffer background
 	cairo_set_source_rgba(server->m_cr, 0.22, 0.22, 0.22, 1.0); // dark grey background
 	cairo_paint(server->m_cr);
-	cairo_set_font_size(server->m_cr, 22);
+	cairo_set_font_size(server->m_cr, mn_font_size);
 
 	server->menu_dialog_size = height;
 	line[0] = '\0';
