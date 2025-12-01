@@ -131,6 +131,7 @@ void create_config(void) {
 		fprintf(config, "%s\n", "# <Super+Esc> to log out");
 		fprintf(config, "%s\n", "# <Super+x> to close the current window");
 		fprintf(config, "%s\n", "# <Alt+Tab> to switch to the next window");
+		fprintf(config, "%s\n", "# <Alt+Ctrl+Tab> to switch to the previous window");
 		fprintf(config, "%s\n", "# Example of user defined shortcuts:");
 		fprintf(config, "%s\n", "# NOTE: You have to preserve binding_ and command_ prefixes.");
 		fprintf(config, "%s\n", "#binding_thunar = WLR_MODIFIER_LOGO XKB_KEY_f");
@@ -163,13 +164,19 @@ void create_config(void) {
 		fprintf(config, "%s\n", "[ Menu ]");
 		fprintf(config, "%s\n", "# Here you can specify a few items that will appear");
 		fprintf(config, "%s\n", "# when clicking on the left bottom corner of the screen.");
-		fprintf(config, "%s\n", "# Examples:");
+		fprintf(config, "%s\n", "# mn_active_area_x/y sets the size of the clickable area on the bottom left corner.");
+		fprintf(config, "%s\n", "mn_font_size = 22");
+		fprintf(config, "%s\n", "mn_active_area_x = 30");
+		fprintf(config, "%s\n", "mn_active_area_y = 30");
 		fprintf(config, "%s\n", "menu_item = Reboot");
 		fprintf(config, "%s\n", "menu_item = systemctl reboot");
 		fprintf(config, "%s\n", "menu_item = Power Off");
 		fprintf(config, "%s\n", "menu_item = systemctl poweroff\n");
 		fprintf(config, "%s\n", "[ Windowlist ]");
-		fprintf(config, "%s\n", "# Clicking on the top right corner of the screen shows a window list.\n");
+		fprintf(config, "%s\n", "# Clicking on the top right corner of the screen shows a window list.");
+		fprintf(config, "%s\n", "# wl_active_area_x/y sets the size of the clickable area on the top right corner.");
+		fprintf(config, "%s\n", "wl_active_area_x = 5");
+		fprintf(config, "%s\n", "wl_active_area_y = 5\n");
 		fprintf(config, "%s\n", "[ Panel ]");
 		fprintf(config, "%s\n", "# Hovering over the bottom right corner of the screen shows a panel.\n");
 
