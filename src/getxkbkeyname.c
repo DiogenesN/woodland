@@ -38,11 +38,16 @@
 #include <string.h>
 
 char *xkb_keyname(const char *hexadecimal) {
-    FILE *file = fopen("/usr/include/xkbcommon/xkbcommon-keysyms.h", "r");
-    if (!file) {
-        perror("Error opening file");
-        return NULL;
-    }
+	/* Try system include directory first */
+	FILE *file = fopen("/usr/include/xkbcommon/xkbcommon-keysyms.h", "r");
+	if (!file) {
+		/* Try /usr/local/include next */
+		file = fopen("/usr/local/include/xkbcommon/xkbcommon-keysyms.h", "r");
+		if (!file) {
+			perror("Error opening xkbcommon-keysyms.h");
+			return NULL;
+		}
+	}
     char buffer[256];
     char *keyname = NULL;
     while (fgets(buffer, sizeof(buffer), file) != NULL) {
