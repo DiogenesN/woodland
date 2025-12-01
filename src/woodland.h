@@ -151,6 +151,15 @@ struct woodland_server {
 	bool menu_ly_hovered;
 	char *items[256];
 
+	// Windowlist menu
+	int wl_active_area_x;
+	int wl_active_area_y;
+
+	// Items menu
+	int32_t mn_font_size;
+	int mn_active_area_x;
+	int mn_active_area_y;
+
 	// Other variables;
 	double grab_x;
 	double grab_y;
@@ -158,6 +167,7 @@ struct woodland_server {
 	uint32_t resize_edges;
 	uint32_t saved_brightness;
 	bool super_key_down;
+	bool lctrl_key_down;
 	bool keybind_handled;
 	bool cycling_mode;
 	char *config;
@@ -202,12 +212,14 @@ struct woodland_view {
 	struct wl_listener request_resize;
 	struct wl_listener foreign_destroy;
 	struct wl_listener request_minimize;
+	struct wl_listener request_maximize;
 	struct wl_listener request_activate;
 	struct wl_listener request_fullscreen;
 	struct wlr_foreign_toplevel_handle_v1 *foreign_handle;
 	xkb_layout_index_t keyboard_layout;
 	bool resized;
 	bool minimized;
+	bool maximized;
 	bool fullscreened;
 	char *app_id;
 };
