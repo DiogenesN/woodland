@@ -1,27 +1,40 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 /* creates initial config directory and file */
+#include <math.h>
+#include <time.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <cairo/cairo-svg.h>
-#include <wlroots-0.18/wlr/util/log.h>
+#include "getvaluefromconf.h"
+#include "generate-icon-cache.h"
+
+static void draw_conifer(cairo_t *cr, double x, double y, double width, double height) {
+	cairo_move_to(cr, x, y - height);
+	cairo_line_to(cr, x - width/2, y);
+	cairo_line_to(cr, x + width/2, y);
+	cairo_close_path(cr);
+	cairo_fill(cr);
+}
 
 void create_config(void) {
-	wlr_log_init(WLR_DEBUG, NULL);
+	///wlr_log_init(WLR_DEBUG, NULL);
 	const char *HOME = getenv("HOME");
 	if (HOME == NULL) {
 		fprintf(stderr, "Unable to determine the user's home directory.\n");
 		return;
 	}
 
+	const char *iconTheme = NULL;
 	const char *dirConfig = "/.config/woodland";
 	const char *dirConfigIcons = "/.config/woodland/icons";
+	const char *iconsCache	= "/icons.cache";
 	const char *fileConfig = "/woodland.ini";
-	const char *fileConfigWindowsSizes = "/windows_sizes.db";
 
+	const char *wallpaper		= "/woodland.png";
 	const char *noicon			= "/noicon.svg";
 	const char *dioVolHigh		= "/dio-volume-high.svg";
 	const char *dioVolMid		= "/dio-volume-mid.svg";
@@ -35,9 +48,10 @@ void create_config(void) {
 	char dirConfigBuff[strlen(HOME) + strlen(dirConfig) + 1];
 	char dirConfigIconsBuff[strlen(HOME) + strlen(dirConfigIcons) + 1];
 	char fileConfigBuff[strlen(HOME) + strlen(dirConfig) + strlen(fileConfig) + 1];
-	char fileConfigBuffWindowsSizes[strlen(HOME) + strlen(dirConfig) + strlen(fileConfigWindowsSizes) + 1];
-	
+	char iconsCacheBuff[strlen(HOME) + strlen(dirConfig) + strlen(iconsCache) + 1];
+
 	char noiconBuff[strlen(HOME) + strlen(dirConfigIcons) + strlen(noicon) + 3];
+	char wallpaperBuff[strlen(HOME) + strlen(dirConfigIcons) + strlen(wallpaper) + 3];
 	char dioVolHighBuff[strlen(HOME) + strlen(dirConfigIcons) + strlen(dioVolHigh) + 3];
 	char dioVolMidBuff[strlen(HOME) + strlen(dirConfigIcons) + strlen(dioVolMid) + 3];
 	char dioVolLowBuff[strlen(HOME) + strlen(dirConfigIcons) + strlen(dioVolLow) + 3];
@@ -50,9 +64,10 @@ void create_config(void) {
 	snprintf(dirConfigBuff, sizeof(dirConfigBuff), "%s%s", HOME, dirConfig);
 	snprintf(dirConfigIconsBuff, sizeof(dirConfigIconsBuff), "%s%s", HOME, dirConfigIcons);
 	snprintf(fileConfigBuff, sizeof(fileConfigBuff), "%s%s%s", HOME, dirConfig, fileConfig);
-	snprintf(fileConfigBuffWindowsSizes, sizeof(fileConfigBuffWindowsSizes), "%s%s%s", HOME, dirConfig, fileConfigWindowsSizes);
-	
+	snprintf(iconsCacheBuff, sizeof(iconsCacheBuff), "%s%s%s", HOME, dirConfig, iconsCache);
+
 	snprintf(noiconBuff, sizeof(noiconBuff), "%s%s%s", HOME, dirConfigIcons, noicon);
+	snprintf(wallpaperBuff, sizeof(wallpaperBuff), "%s%s%s", HOME, dirConfigIcons, wallpaper);
 	snprintf(dioVolHighBuff, sizeof(dioVolHighBuff), "%s%s%s", HOME, dirConfigIcons, dioVolHigh);
 	snprintf(dioVolMidBuff, sizeof(dioVolMidBuff), "%s%s%s", HOME, dirConfigIcons, dioVolMid);
 	snprintf(dioVolLowBuff, sizeof(dioVolLowBuff), "%s%s%s", HOME, dirConfigIcons, dioVolLow);
@@ -64,7 +79,6 @@ void create_config(void) {
 
 	struct stat dirBuffer;
 	struct stat fileBuffer;
-
 	int dirExists = (stat(dirConfigBuff, &dirBuffer) == 0);
 	int fileExists = (stat(fileConfigBuff, &fileBuffer) == 0);
 
@@ -90,24 +104,25 @@ void create_config(void) {
 			return;
 		}
 
-		FILE *config_winsizes = fopen(fileConfigBuffWindowsSizes, "w+");
-		if (config_winsizes == NULL) {
-			perror("fopen");
-			return;
-		}
-
 		fprintf(config, "%s\n", "# Configuration file for woodland compositor\n");
 		fprintf(config, "%s\n", "[ Welcome screen ]");
 		fprintf(config, "%s\n", "# If you have any weclome screen application then it goes here.");
 		fprintf(config, "%s\n", "welcome_screen = none\n");
+		fprintf(config, "%s\n", "[ Icon Theme ]");
+		fprintf(config, "%s\n", "# NOTE: To apply the theme you have to restart the compositor");
+		fprintf(config, "%s\n", "# The icon theme is used to provide icons for the windowlist menu");
+		fprintf(config, "%s\n", "# Provide the full path to your icon theme, example:");
+		fprintf(config, "%s\n", "# icons_theme = /usr/share/icons/Lyra-blue-dark");
+		fprintf(config, "%s\n", "# To disable icons, set it to: icons_theme = none");
+		fprintf(config, "%s\n", "icons_theme = /usr/share/icons/hicolor\n");
 		fprintf(config, "%s\n", "[ Brightness ]");
 		fprintf(config, "%s\n", "# d_power_path, the path to the file that controls the brightness level.");
 		fprintf(config, "%s\n", "d_power_path = /sys/class/backlight/intel_backlight/brightness");
 		fprintf(config, "%s\n", "\n[ Background ]");
 		fprintf(config, "%s\n", "# Provide the full path to the image.");
-		fprintf(config, "%s\n", "#background = path\n");
-		fprintf(config, "%s\n", "[ Touchpad ]");
-		fprintf(config, "%s\n", "# Enable or disable tap to click.");
+		fprintf(config, "background = %s\n", wallpaperBuff);
+		fprintf(config, "%s\n", "\n[ Touchpad ]");
+		fprintf(config, "%s\n", "# enable or disable tap to click.");
 		fprintf(config, "%s\n", "tap_to_click = enable\n");
 		fprintf(config, "%s\n", "[ Keyboard layouts ]");
 		fprintf(config, "%s\n", "# Alt+Shift to switch layouts");
@@ -132,6 +147,7 @@ void create_config(void) {
 		fprintf(config, "%s\n", "# <Super+x> to close the current window");
 		fprintf(config, "%s\n", "# <Alt+Tab> to switch to the next window");
 		fprintf(config, "%s\n", "# <Alt+Ctrl+Tab> to switch to the previous window");
+		fprintf(config, "%s\n", "# <Super+Space> to open the applauncher");
 		fprintf(config, "%s\n", "# Example of user defined shortcuts:");
 		fprintf(config, "%s\n", "# NOTE: You have to preserve binding_ and command_ prefixes.");
 		fprintf(config, "%s\n", "#binding_thunar = WLR_MODIFIER_LOGO XKB_KEY_f");
@@ -140,17 +156,24 @@ void create_config(void) {
 		fprintf(config, "%s\n", "# Open specified windows at the given fixed position.");
 		fprintf(config, "%s\n", "# to get the title and/or app_id, use wlrctl tool.");
 		fprintf(config, "%s\n", "# The placement model is as follows:");
-		fprintf(config, "%s\n", "# (declaration) window_place = (keyword) app_id: (app id) app_id (number) x (number) y");
-		fprintf(config, "%s\n", "# (declaration) window_place = (keyword) title: (title) title (number) x (number) y");
+		fprintf(config, "%s\n",
+		"# (declaration) window_place = (keyword) app_id: (app id) app_id (number) x (number) y");
+		fprintf(config, "%s\n",
+		"# (declaration) window_place = (keyword) title: (title) title (number) x (number) y");
 		fprintf(config, "%s\n", "# Example of how to make 'thunar' start at position x=100 y=100:");
 		fprintf(config, "%s\n", "#window_place = app_id: thunar 100 100 (places thunar at x=100 y=100)");
-		fprintf(config, "%s\n", "# or\n#window_place = title: \"some title\" 100 100 (places window containing title at x=100 y=100)");
-		fprintf(config, "%s\n", "# NOTE: Titles with spaces must be put between double quotes: e.g \"New Document\"\n");
+		fprintf(config, "%s\n",
+		"# or\n#window_place = title: \"some title\" 100 100 \
+		(places window containing title at x=100 y=100)");
+		fprintf(config, "%s\n",
+		"# NOTE: Titles with spaces must be put between double quotes: e.g \"New Document\"\n");
 		fprintf(config, "%s\n", "[ Zoom ]");
 		fprintf(config, "%s\n", "# Zooming is activated by pressing super key and scrolling.");
 		fprintf(config, "%s\n", "# zoom_speed defines how fast zooming area is moving around.");
-		fprintf(config, "%s\n", "# zoom_edge_threshold defines the distance from the edges to start panning.");
-		fprintf(config, "%s\n", "# zoom_top_edge if 'enabled' then you can scroll on the left top edge to zoom.");
+		fprintf(config, "%s\n",
+		"# zoom_edge_threshold defines the distance from the edges to start panning.");
+		fprintf(config, "%s\n",
+		"# zoom_top_edge if 'enabled' then you can scroll on the left top edge to zoom.");
 		fprintf(config, "%s\n", "zoom_speed = 0.009\n");
 		fprintf(config, "%s\n", "[ Startup ]");
 		fprintf(config, "%s\n", "# Specify the startup commands.");
@@ -164,7 +187,8 @@ void create_config(void) {
 		fprintf(config, "%s\n", "[ Menu ]");
 		fprintf(config, "%s\n", "# Here you can specify a few items that will appear");
 		fprintf(config, "%s\n", "# when clicking on the left bottom corner of the screen.");
-		fprintf(config, "%s\n", "# mn_active_area_x/y sets the size of the clickable area on the bottom left corner.");
+		fprintf(config, "%s\n",
+		"# mn_active_area_x/y sets the size of the clickable area on the bottom left corner.");
 		fprintf(config, "%s\n", "mn_font_size = 22");
 		fprintf(config, "%s\n", "mn_active_area_x = 30");
 		fprintf(config, "%s\n", "mn_active_area_y = 30");
@@ -174,19 +198,89 @@ void create_config(void) {
 		fprintf(config, "%s\n", "menu_item = systemctl poweroff\n");
 		fprintf(config, "%s\n", "[ Windowlist ]");
 		fprintf(config, "%s\n", "# Clicking on the top right corner of the screen shows a window list.");
-		fprintf(config, "%s\n", "# wl_active_area_x/y sets the size of the clickable area on the top right corner.");
+		fprintf(config, "%s\n",
+		"# wl_active_area_x/y sets the size of the clickable area on the top right corner.");
 		fprintf(config, "%s\n", "wl_active_area_x = 5");
 		fprintf(config, "%s\n", "wl_active_area_y = 5\n");
 		fprintf(config, "%s\n", "[ Panel ]");
 		fprintf(config, "%s\n", "# Hovering over the bottom right corner of the screen shows a panel.\n");
+		fprintf(config, "%s\n", "[ Applauncher ]");
+		fprintf(config, "%s\n", "# Press <Super+Space> to open applauncer to run your favorite app.");
+		fprintf(config, "%s\n", "# If your app doesn't show up in the search box, you need to refresh it.");
+		fprintf(config, "%s\n", "# To refresh, type in the search box /refresh (hit Enter).\n");
 
 		// Log that the configuration files were created
 		///wlr_log(WLR_INFO, "Configuration files created successfully!");
-
-		fprintf(config_winsizes, "%s\n", "###########################################\n\n");
-		fclose(config_winsizes);
 		fclose(config);
-	
+
+		//////////////////////////////// drawing wallpaper //////////////////////////
+		srand(time(NULL));
+		int w = 1920;
+		int h = 1080;
+
+
+		cairo_surface_t *surfaceWall = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+		cairo_t *crWall = cairo_create(surfaceWall);
+
+		// 1. Base forest background
+		cairo_set_source_rgb(crWall, 0.16, 0.22, 0.18);
+		cairo_paint(crWall);
+
+		// 2. Soft sky glow from above
+		cairo_pattern_t *sky = cairo_pattern_create_linear(0, 0, 0, h * 0.5);
+		cairo_pattern_add_color_stop_rgba(sky, 0.0, 0.70, 0.82, 0.72, 0.18);
+		cairo_pattern_add_color_stop_rgba(sky, 1.0, 0.70, 0.82, 0.72, 0.0);
+
+		cairo_set_source(crWall, sky);
+		cairo_rectangle(crWall, 0, 0, w, h * 0.5);
+		cairo_fill(crWall);
+		cairo_pattern_destroy(sky);
+
+		// 3. Distant trees
+		for (int i = 0; i < 22; i++) {
+			double x = rand() % w;
+			double th = 400 + (rand() % 300);
+			double tw = 60 + (rand() % 40);
+
+			cairo_set_source_rgba(crWall, 0.40, 0.55, 0.45, 0.10);
+			draw_conifer(crWall, x, h, tw, th);
+		}
+
+		// 4. Mid-ground trees
+		for (int i = 0; i < 14; i++) {
+			double x = rand() % w;
+			double th = 600 + (rand() % 400);
+			double tw = 100 + (rand() % 80);
+
+			cairo_set_source_rgba(crWall, 0.22, 0.36, 0.28, 0.18);
+			draw_conifer(crWall, x, h, tw, th);
+		}
+
+		// 5. Sunbeam rays coming from above
+		cairo_pattern_t *rays = cairo_pattern_create_linear(w * 0.4, -200, w * 0.7, h);
+		cairo_pattern_add_color_stop_rgba(rays, 0.0, 0.95, 1.0, 0.92, 0.20);
+		cairo_pattern_add_color_stop_rgba(rays, 0.5, 0.95, 1.0, 0.92, 0.05);
+		cairo_pattern_add_color_stop_rgba(rays, 1.0, 0.95, 1.0, 0.92, 0.0);
+
+		cairo_set_source(crWall, rays);
+		cairo_paint(crWall);
+		cairo_pattern_destroy(rays);
+
+		// 6. Ground mist (subtle)
+		cairo_pattern_t *mist = cairo_pattern_create_linear(0, h * 0.65, 0, h);
+		cairo_pattern_add_color_stop_rgba(mist, 0.0, 0.0, 0.0, 0.0, 0.0);
+		cairo_pattern_add_color_stop_rgba(mist, 1.0, 0.45, 0.55, 0.48, 0.25);
+
+		cairo_set_source(crWall, mist);
+		cairo_rectangle(crWall, 0, h * 0.65, w, h * 0.35);
+		cairo_fill(crWall);
+		cairo_pattern_destroy(mist);
+
+		cairo_surface_write_to_png(surfaceWall, wallpaperBuff);
+
+		cairo_destroy(crWall);
+		cairo_surface_destroy(surfaceWall);
+
 		//////////////////////////////// drawing volume off icon //////////////////////////
 		cairo_surface_t *surfaceVolOff = cairo_svg_surface_create(dioVolOffBuff, 100, 100);
 		cairo_t *crVolOff = cairo_create(surfaceVolOff);
@@ -530,12 +624,11 @@ void create_config(void) {
 		cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.0); // Transparent fill: RGBA(0, 0, 0, 0)
 		cairo_fill(cr);
 		// Draw the circle outline
-		cairo_set_source_rgb(cr, 1.0, 0.0, 0.0); // Red outline: RGB(1, 0, 0)
+		cairo_set_source_rgb(cr, 1.0, 1.0, 1.0); // White line: RGB(1, 1, 1)
 		cairo_set_line_width(cr, 10.0); // Set line width to 10 (adjust as needed)
 		cairo_arc(cr, 50, 50, 40, 0, 2 * M_PI); // Center (50, 50), radius 40
 		cairo_stroke(cr); // Draw the outline using stroke instead of fill
 		// Draw the diagonal lines for close icon effect
-		cairo_set_source_rgb(cr, 1.0, 1.0, 1.0); // White line: RGB(1, 1, 1)
 		cairo_set_line_width(cr, 5.0); // Set line width to 5 (adjust as needed)
 		cairo_move_to(cr, 30, 30); // Move to the starting point of the line
 		cairo_line_to(cr, 70, 70); // Draw a line to the ending point
@@ -562,8 +655,72 @@ void create_config(void) {
 		cairo_surface_destroy(surfaceNetOff);
 		cairo_destroy(cr);
 		cairo_surface_destroy(surface);
+
+		// check if icons theme has a valid path
+		// getting the path to the icons directory
+		iconTheme = get_char_value_from_conf(fileConfigBuff, "icons_theme");
+		if (iconTheme) {
+			if (strcmp(iconTheme, "none") == 0) {
+				///wlr_log(WLR_INFO, "No icon theme specified, skipping icon cache file creation");
+				free((void *)iconTheme);
+				return;
+			}
+			else {
+				///wlr_log(WLR_INFO, "Icon theme provided, generating icons cache...");
+				FILE *outputFile = fopen(iconsCacheBuff, "w");
+				if (outputFile == NULL) {
+					perror("fopen failed");
+					if (iconTheme) {
+						free((void *)iconTheme);
+						iconTheme = NULL;
+					}
+					return;
+				}
+				else {
+					create_icon_cache(outputFile, ".svg", iconTheme);
+					if (iconTheme) {
+						free((void *)iconTheme);
+						iconTheme = NULL;
+					}
+					fclose(outputFile); // Moved inside/after logic to be safe
+				}
+				///wlr_log(WLR_INFO, "Icon cache file created successfully");
+			}
+		}
 	}
-	else {
+	else {		// check if icons theme has a valid path
+		// getting the path to the icons directory
+		iconTheme = get_char_value_from_conf(fileConfigBuff, "icons_theme");
+		if (iconTheme) {
+			if (strcmp(iconTheme, "none") == 0) {
+				///wlr_log(WLR_INFO, "No icon theme specified, skipping icon cache file creation");
+				if (iconTheme) {
+					free((void *)iconTheme);
+					iconTheme = NULL;
+				}
+				return;
+			}
+			else {
+				///wlr_log(WLR_INFO, "Icon theme provided, generating icons cache...");
+				FILE *outputFile = fopen(iconsCacheBuff, "w");
+				if (outputFile == NULL) {
+					perror("fopen failed");
+					if (iconTheme) {
+						free((void *)iconTheme);
+						iconTheme = NULL;
+					}
+					return;
+				}
+				else {
+					create_icon_cache(outputFile, ".svg", iconTheme);
+					if (iconTheme) {
+						free((void *)iconTheme);
+						iconTheme = NULL;
+					}
+					fclose(outputFile); // Moved inside/after logic to be safe
+				}
+			}
+		}
 		// Log that the configuration files already exist
 		///wlr_log(WLR_INFO, "Configuration files exist, nothing to do!");
 	}

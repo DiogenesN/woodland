@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <wordexp.h>
 #include <stdbool.h>
 #include <libinput.h>
 #include <cairo/cairo.h>
@@ -54,6 +55,7 @@
 #include <wlroots-0.18/wlr/types/wlr_linux_dmabuf_v1.h>
 #include <wlroots-0.18/wlr/types/wlr_export_dmabuf_v1.h>
 #include <wlroots-0.18/wlr/types/wlr_presentation_time.h>
+#include <wlroots-0.18/wlr/types/wlr_fractional_scale_v1.h>
 #include <wlroots-0.18/wlr/types/wlr_relative_pointer_v1.h>
 #include <wlroots-0.18/wlr/types/wlr_virtual_keyboard_v1.h>
 #include <wlroots-0.18/wlr/types/wlr_output_management_v1.h>

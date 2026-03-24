@@ -4,20 +4,24 @@
 /* Minimal but functional Wayland compositor. */
 
 #define STB_IMAGE_IMPLEMENTATION // needed for background image implementation
+#define MAX_SCROLL_DELTA 5.0 // clamp extreme deltas
+#define TOUCHPAD_THRESHOLD 0.4
+#define TOUCHPAD_SMOOTHING 0.25
 #define TOUCHPAD_SCROLL_SCALE 0.7 // Scaling factor for touchpad scrolls
-#define MOUSE_SCROLL_SCALE 1.0 // Scaling factor for mouse wheel scrolls
 #define SCROLL_DEBOUNCE_THRESHOLD 3.0 // Threshold to filter out small scroll values
+#define MOUSE_SCROLL_SCALE 1.0 // Scaling factor for mouse wheel scrolls
 #define MAX_NR_OF_STARTUP_COMMANDS 265 // maximum number of user defined startup commands
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
-#define WL_LIST_SAFE_REMOVE(link)			\
-	do {									\
-		if ((link)->prev && (link)->next) { \
-			wl_list_remove(link);			\
-			(link)->prev = NULL;			\
-			(link)->next = NULL;			\
-		}									\
+#define WL_LIST_SAFE_REMOVE(link)												\
+	do {																		\
+		if ((link) != NULL && (link)->next != NULL && (link)->prev != NULL) {	\
+			if (!wl_list_empty(link)) {											\
+				wl_list_remove(link);											\
+				wl_list_init(link);												\
+			}																	\
+		}																		\
 	} while (0)
 
 /* Local headers */
@@ -25,31 +29,256 @@
 #include "panel.h"
 #include "runcmd.h"
 #include "woodland.h"
+#include "texttobuff.h"
 #include "windowlist.h"
+#include "applauncher.h"
 #include "create-config.c"
 #include "getxkbkeyname.h"
 #include "getvaluefromconf.h"
 
-/**
- *************** Helper functions *************** 
- */
+/****************************************** HELPERS ******************************************/
+/* this will show the checking psswd text */
+static int check_passwd(void *data) {
+	if (!data) {
+		fprintf(stderr, "No 'data' in 'check_passwd'!\n");
+		return 1;
+	}
+	struct woodland_server *server = data;
+	if (!server) {
+		fprintf(stderr, "No 'server' in 'check_passwd'!\n");
+		return 1;
+	}
+	connect_to_secured_ssid(server->ssids[1], server->ssids[3]);
+	if (server->check_pssed_timer) {
+		wl_event_source_remove(server->check_pssed_timer);
+		server->check_pssed_timer = NULL;
+	}
 
-// Refresh Wi-Fi network list
-static void refresh_networks(struct woodland_server *server) {
 	// Refreshing the list of available wifi networks
-	if (server->ssids[0] != NULL) {
-		for (size_t i = 0; server->ssids[i] != NULL; i++) {
-			///printf("In 'scan_network' freeing up SSID[%zu]: %s\n", i, server->ssids[i]);
-			free(server->ssids[i]); // Don't forget to free
-			server->ssids[i] = NULL;
+	refresh_networks(server);
+	return 0;
+}
+
+/* this is used on a timer to delay the zooming for 200 ms */
+static int finish_zoom_notify(void *data) {
+	struct woodland_server *server = data;
+	struct woodland_view *toplevel;
+
+	wl_list_for_each(toplevel, &server->toplevels, link) {
+		if (!toplevel->xdg_toplevel || !toplevel->xdg_toplevel->base->surface) continue;
+		struct wlr_surface *surface = toplevel->xdg_toplevel->base->surface;
+
+		// Clean up the double to avoid GTK4 precision crashes
+		// e.g., 1.400000003 becomes 1.4
+		double clean_scale = round(server->zoom_factor * 10.0) / 10.0;
+
+		// notify_clients about scaling factor
+		wlr_fractional_scale_v1_notify_scale(surface, clean_scale);
+
+		if (toplevel->lock_size) {
+			wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, 
+							toplevel->initial_width, 
+							toplevel->initial_height);
+			wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
 		}
 	}
-	fprintf(stderr, "Scanning for networks...\n");
-	server->number_of_ssids = list_wifi_devices(server->ssids, 256);
-	if (server->number_of_ssids <= 0) {
-		server->ssids[0] = strdup("No networks found! Is wifi enabled?");
+	// The timer has fired and finished its job. Clean it up.
+	wl_event_source_remove(server->zoom_timer);
+	server->zoom_timer = NULL;
+	return 0;
+}
+
+/* checks if a file by the given path actually exists 
+ * usage:
+ if (file_exists("/path/to/file.txt")) {
+	file exists
+ }
+ else {
+	file does not exist or is inaccessible
+ }
+*/
+int file_exists(const char *path) {
+	struct stat st;
+	return stat(path, &st) == 0;
+}
+
+/* This function is a workaround for GTK apps to stop them from auto-resizing when scaling/zooming
+ * some HTK apps tend to automatically resize whenever zooming the screen so this handle prevents this
+ * behavior. Iterates through all toplevels and signals a resizing state.
+ */
+static void keep_scaling_factor(struct woodland_server *server) {
+	if (!server) {
+		return;
 	}
-	fprintf(stderr, "Scanning done!\n");
+
+	struct woodland_view *iter;
+	// Use _reverse if that's your preferred stacking order, 
+	// but logic-wise, we just need coverage.
+	wl_list_for_each_reverse(iter, &server->toplevels, link) {
+		if (!iter || !iter->xdg_toplevel) {
+			continue;
+		}
+
+		// Ensure the surface is in a state that can receive configures
+		if (iter->xdg_toplevel->base->initialized) {
+			wlr_xdg_toplevel_set_resizing(iter->xdg_toplevel, true);
+			wlr_xdg_surface_schedule_configure(iter->xdg_toplevel->base);
+		}
+	}
+}
+
+/**
+ * Requests a new size for a specific toplevel.
+ * Returns the serial of the configure event, or 0 on failure.
+ */
+static uint32_t woodland_xdg_toplevel_set_size(struct wlr_xdg_toplevel *toplevel,
+												int32_t width,
+												int32_t height) {
+	if (!toplevel || !toplevel->base) {
+		return 0;
+	}
+
+	if (width < 0 || height < 0) {
+		fprintf(stderr, "No size in 'woodland_xdg_toplevel_set_size'!\n");
+		return 0;
+	}
+
+	wlr_xdg_toplevel_set_size(toplevel, width, height);
+
+	// Always apply the scaling workaround for all initial commits
+	wlr_xdg_toplevel_set_resizing(toplevel, true);
+
+	// Schedule the configure event. 
+	// This returns a unique serial number used to track client acknowledgement.
+	return wlr_xdg_surface_schedule_configure(toplevel->base);
+}
+
+/**
+ * Requests a new position for a specific toplevel
+ */
+static void woodland_scene_node_set_position(struct woodland_view *toplevel, int x, int y) {
+	if (!toplevel->xdg_toplevel || !toplevel->xdg_toplevel->base) {
+		return;
+	}
+
+	// only a fully committed surface should be positioned
+	// toplevel->commit_now is false only after committing is done
+	if (!toplevel->commit_now) {
+		wlr_scene_node_set_position(&toplevel->scene_tree->node, x, y);
+		wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
+	}
+}
+
+/**
+ * Centers an xdg_toplevel on its current output, handling edge cases for
+ * HiDPI scaling (MPV) and lopsided buffers/shadows (Qt/Kdenlive).
+ */
+static void woodland_toplevel_center(struct woodland_view *toplevel) {
+	struct woodland_server *server = toplevel->server;
+	
+	// Gather Geometry and Output Data
+	struct wlr_box output_box;
+	// Retrieve the logical bounding box of the layout (handles multiple monitors)
+	wlr_output_layout_get_box(server->output_layout, NULL, &output_box);
+
+	// The 'geometry' is the visible part of the window (decorations + content)
+	struct wlr_box toplevel_size;
+	wlr_xdg_surface_get_geometry(toplevel->xdg_toplevel->base, &toplevel_size);
+
+	// The 'geo' pointer gives us the raw committed state from the client
+	struct wlr_box *geo = &toplevel->xdg_toplevel->base->current.geometry;
+
+	double target_w = 0;
+	double target_h = 0;
+
+	// Decision Tree for Effective Dimensions
+	
+	// Case A: MPV / Scaling Edge Case
+	// If zoom is active and the window is reporting a "1:1" buffer-to-geometry ratio,
+	// it usually means it's a high-res client that needs to be "pushed" to fill
+	// the physical pixel space.
+	if (server->zoom_factor > 1.0 && 
+		toplevel_size.width == toplevel->xdg_toplevel->base->surface->current.width) {
+
+		target_w = toplevel->xdg_toplevel->base->surface->current.buffer_width;
+		target_h = toplevel->xdg_toplevel->base->surface->current.buffer_height;
+
+		// Clamp to transformed limits (fix for xfce4-terminal weird size when scaled)
+		if (target_w > server->transformed_width) {
+			// turn off to let other weird apps set normal size and centered
+			target_w = toplevel_size.width;
+			target_h = 0;
+		}
+		if (target_h > server->transformed_height) {
+			// turn off to let other weird apps set normal size and centered
+			target_w = 0;
+			target_h = toplevel_size.height;
+		}
+		if (target_w > server->transformed_width && target_h > server->transformed_height) {
+			// turn off to let other weird apps set normal size and centered
+			target_w = toplevel_size.width;
+			target_h = toplevel_size.height;
+		}
+
+		// Force the client to accept this size so it doesn't render at "half-size"
+		woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel, (int32_t)target_w, (int32_t)target_h);
+		wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
+	} 
+	// Case B: Qt / Kdenlive Shadow Case
+	// If the raw committed geometry is larger than the reported visible geometry,
+	// the client likely has invisible margins (shadows). Centering the raw buffer
+	// usually results in the best visual alignment for these apps.
+	else if (geo->width > toplevel_size.width) {
+		target_w = geo->width;
+		target_h = geo->height;
+	} 
+	// Case C: Standard Wayland Apps
+	else {
+		target_w = toplevel_size.width;
+		target_h = toplevel_size.height;
+	}
+
+	// Safety Clamp
+	// Ensure the window doesn't exceed the logical dimensions of the screen
+	if (target_w > server->transformed_width) target_w = server->transformed_width;
+	if (target_h > server->transformed_height) target_h = server->transformed_height;
+
+	// Calculate Final Coordinates
+	// Subtract half the target width from the screen midpoint to find the center
+	double x = output_box.x + (server->transformed_width - target_w) / 2.0;
+	double y = output_box.y + (server->transformed_height - target_h) / 2.0;
+
+	// Apply Position
+	woodland_scene_node_set_position(toplevel, (int)round(x), (int)round(y));
+}
+
+static struct woodland_view *desktop_toplevel_at(struct woodland_server *server,
+																		double lx,
+																		double ly,
+																		struct wlr_surface **surface,
+																		double *sx,
+																		double *sy) {
+	/* This returns the topmost node in the scene at the given layout coords.
+	 * We only care about surface nodes as we are specifically looking for a
+	 * surface in the surface tree of a woodland_view. */
+	struct wlr_scene_node *node = wlr_scene_node_at(&server->scene->tree.node, lx, ly, sx, sy);
+	if (node == NULL || node->type != WLR_SCENE_NODE_BUFFER) {
+		return NULL;
+	}
+	struct wlr_scene_buffer *scene_buffer = wlr_scene_buffer_from_node(node);
+	struct wlr_scene_surface *scene_surface = wlr_scene_surface_try_from_buffer(scene_buffer);
+	if (!scene_surface) {
+		return NULL;
+	}
+
+	*surface = scene_surface->surface;
+	/* Find the node corresponding to the woodland_view at the root of this
+	 * surface tree, it is the only one for which we set the data field. */
+	struct wlr_scene_tree *tree = node->parent;
+	while (tree != NULL && tree->node.data == NULL) {
+		tree = tree->node.parent;
+	}
+	return tree->node.data;
 }
 
 /* Takes an index, looks for it in a string and then returns a new string with
@@ -161,8 +390,8 @@ static char *layout_name_from_index(int index, char *layouts) {
 }
 
 static void change_keyboard_layout(struct woodland_server *server,
-								   struct wlr_keyboard *keyboard,
-								   struct woodland_view *view) {
+									struct wlr_keyboard *keyboard,
+									struct woodland_view *view) {
 	// Change keyboard layout per application
 	char *layouts = get_char_value_from_conf(server->config, "xkb_layouts");
 	if (!layouts) {
@@ -200,8 +429,8 @@ static void change_keyboard_layout(struct woodland_server *server,
 	};
 
 	struct xkb_keymap *keymap = xkb_keymap_new_from_names(context,
-														  &rules,
-														  XKB_KEYMAP_COMPILE_NO_FLAGS);
+															&rules,
+															XKB_KEYMAP_COMPILE_NO_FLAGS);
 	if (!keymap) {
 		wlr_log(WLR_ERROR, "Error: Failed to create xkb_keymap.");
 		xkb_context_unref(context);
@@ -241,36 +470,79 @@ static void focus_toplevel(struct woodland_view *toplevel) {
 	}
 
 	struct woodland_server *server = toplevel->server;
-	struct wlr_seat *seat = server->seat;
-	struct wlr_surface *surface = toplevel->xdg_toplevel->base->surface;
-	//we use the keyboard to obtain the surface to which it was previosly attached;
-	struct wlr_surface *prev = seat->keyboard_state.focused_surface;
-	if (prev == surface) {
+	if (server->disable_toplevel_focus) {
 		return;
 	}
-	if (prev) {
-		struct wlr_xdg_toplevel *prev_toplevel = wlr_xdg_toplevel_try_from_wlr_surface(prev);
-		if (prev_toplevel) {
-			wlr_xdg_toplevel_set_activated(prev_toplevel, false);
+	// 1. Resolve to the "top-most" child first
+	struct woodland_view *target = toplevel;
+	struct woodland_view *view_iter;
+
+	// Find the leaf of the window tree (the most recent modal)
+	bool found_child = true;
+	while (found_child) {
+		found_child = false;
+		wl_list_for_each(view_iter, &server->toplevels, link) {
+			// Check if this view is a child of our current target
+			if (view_iter->xdg_toplevel->parent == target->xdg_toplevel) {
+				target = view_iter;
+				found_child = true;
+				break; 
+			}
 		}
 	}
-	struct wlr_keyboard *kbd = wlr_seat_get_keyboard(seat);
-	wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
 
-	// Only reorder if we're not in cycling mode.
-	if (!server->cycling_mode) {
-		// This is the MRU update. Skipped during Alt+Tab cycle.
-		WL_LIST_SAFE_REMOVE(&toplevel->link); 
-		wl_list_insert(&server->toplevels, &toplevel->link);
+	// Now 'target' is the window that actually gets the keyboard focus
+	if (target && target->xdg_toplevel && 
+		target->xdg_toplevel->base && 
+		target->xdg_toplevel->base->surface) {
+		struct wlr_surface *surface = target->xdg_toplevel->base->surface;
+		struct wlr_seat *seat = server->seat;
+		struct wlr_surface *prev = seat->keyboard_state.focused_surface;
+
+		if (prev == surface) return;
+
+		// Deactivate previous
+		if (prev) {
+			struct wlr_xdg_toplevel *prev_toplevel = wlr_xdg_toplevel_try_from_wlr_surface(prev);
+			if (prev_toplevel) {
+				wlr_xdg_toplevel_set_activated(prev_toplevel, false);
+			}
+		}
+
+		// Stacking: Move to front of logical list
+		// We move the 'target' to the front.
+		if (!server->cycling_mode) {
+			WL_LIST_SAFE_REMOVE(&target->link);
+			wl_list_insert(&server->toplevels, &target->link);
+		}
+		WL_LIST_SAFE_REMOVE(&target->updated_link);
+		wl_list_insert(&server->toplevels_updated, &target->updated_link);
+
+		// Scene Graph: Raise the node
+		wlr_scene_node_raise_to_top(&target->scene_tree->node);
+
+		// Inform the client
+		wlr_xdg_toplevel_set_activated(target->xdg_toplevel, true);
+		struct wlr_keyboard *kbd = wlr_seat_get_keyboard(seat);
+
+		if (kbd) {
+			// If we are switching focus, let's ensure we aren't carrying over 
+			// transient virtual modifiers. Use the seat's current synced state 
+			// or a clean modifier struct. This fixes virtual keyboard blocked state.
+			struct wlr_keyboard_modifiers clean_mods = kbd->modifiers;
+			wlr_seat_keyboard_notify_enter(seat, surface,
+											kbd->keycodes,
+											kbd->num_keycodes,
+											&clean_mods);
+			change_keyboard_layout(server, kbd, toplevel);
+		}
+		else {
+			// If there is no keyboard, we still need to enter the surface with 0 keys
+			wlr_seat_keyboard_notify_enter(seat, surface, NULL, 0, NULL);
+		}
 	}
-
-	wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
-
-	wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, true);
-	if (kbd) {
-		wlr_seat_keyboard_notify_enter(seat, surface, kbd->keycodes, kbd->num_keycodes, &kbd->modifiers);
-		// Change keyboard layout per application
-		change_keyboard_layout(server, kbd, toplevel);
+	else {
+		return;
 	}
 }
 
@@ -281,7 +553,8 @@ static bool cycle_windows(struct woodland_server *server) {
 	}
 
 	// This must be true for focus_toplevel to skip reordering
-	server->cycling_mode = true; 
+	server->cycling_mode = true;
+	server->disable_toplevel_focus = false;
 
 	struct wlr_surface *focused = server->seat->keyboard_state.focused_surface;
 	struct woodland_view *current = NULL;
@@ -329,6 +602,7 @@ static bool cycle_windows_reverse(struct woodland_server *server) {
 	}
 
 	server->cycling_mode = true;
+	server->disable_toplevel_focus = false;
 
 	struct wlr_surface *focused = server->seat->keyboard_state.focused_surface;
 	struct woodland_view *current = NULL;
@@ -380,7 +654,7 @@ static int get_current_brightness(const char *path) {
 		fscanf(brightness_file, "%d", &brightness);
 		fclose(brightness_file);
 	}
-    else {
+	else {
 		wlr_log(WLR_ERROR, "Error in 'get_current_brightness' opening the file: %s", path);
 	}
 	return brightness;
@@ -392,7 +666,7 @@ static void set_brightness(int level, const char *path) {
 		fprintf(brightness_file, "%d", level);
 		fclose(brightness_file);
 	}
-    else {
+	else {
 		wlr_log(WLR_ERROR, "Error in 'set_brightness' opening the file: %s", path);
 		return;
 	}
@@ -457,7 +731,7 @@ static void deactivate_constraint(struct woodland_server *server) {
 	if (server->active_pointer_constraint) {
 		// The constraint is alive, but we are disabling it logicially
 		wlr_pointer_constraint_v1_send_deactivated(server->active_pointer_constraint);
-    }
+	}
 }
 
 static void handle_pointer_constraint_destroy(struct wl_listener *listener, void *data) {
@@ -466,7 +740,7 @@ static void handle_pointer_constraint_destroy(struct wl_listener *listener, void
 
 	// Removing the listener otherwise the list node remains 
 	// pointing to this listener even though the event cycle is finishing.
-	wl_list_remove(&server->constraint_destroy.link);
+	WL_LIST_SAFE_REMOVE(&server->constraint_destroy.link);
 
 	// Clean up your internal reference.
 	if (server->active_pointer_constraint == constraint) {
@@ -684,11 +958,43 @@ static bool handle_keybinding_super(struct woodland_server *server, xkb_keysym_t
 		server->keybind_handled = true;
 		wl_display_terminate(server->wl_display);
 		break;
-
 	case XKB_KEY_x: // Super+x close current active window
 		if (focused_xdg_toplevel) {
 			server->keybind_handled = true;
 			wlr_xdg_toplevel_send_close(focused_xdg_toplevel);
+		}
+		break;
+	case XKB_KEY_space: // open applauncher
+		server->keybind_handled = true;
+		if (!server->applauncher_opened && !server->network_is_clicked) { // opwn
+			if (server->ssids[0] != NULL) {
+				free(server->ssids[0]);
+				server->ssids[0] = NULL;
+			}
+			server->applauncher_opened = true;
+			show_applauncher(server);
+			show_applist(server);
+		}
+		else if (server->applauncher_opened) { // opwn // close
+			server->applauncher_opened = false;
+			if (server->applauncher_wlr_buffer) {
+				wlr_buffer_drop(server->applauncher_wlr_buffer);
+				wlr_scene_node_destroy(&server->applauncher_scene_buffer->node);
+				server->applauncher_wlr_buffer = NULL;
+				server->applauncher_scene_buffer = NULL;
+			}
+			if (server->applist_wlr_buffer) {
+				wlr_buffer_drop(server->applist_wlr_buffer);
+				wlr_scene_node_destroy(&server->applist_scene_buffer->node);
+				server->applist_wlr_buffer = NULL;
+				server->applist_scene_buffer = NULL;
+			}
+			if (server->ssids[0] != NULL) {
+				free(server->ssids[0]);
+				server->ssids[0] = NULL;
+			}
+			server->buff[0] = '\0';
+			///free_desktop_items(server);
 		}
 		break;
 	default:
@@ -720,53 +1026,165 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 	}
 
 	keyboard->server->keybind_handled = false;
+	static bool super_pressed = false;
 
 	for (int i = 0; i < nsyms; i++) {
+		// this block fixes a nasty behavior when toggling applauncher on/off
+		// whenever you first open applauncher and close it back with
+		// super+space then it activates the redrawing logic and it
+		// should only activate it when a search item is being typed
+		if (syms[i] == XKB_KEY_Super_L || syms[i] == XKB_KEY_Super_R) {
+			super_pressed = true;
+		}
+		else if (super_pressed &&
+				 syms[i] != XKB_KEY_space &&
+				 syms[i] != XKB_KEY_Super_L &&
+				 syms[i] != XKB_KEY_Super_R) {
+			super_pressed = false;
+		}
 		if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+			// Typing app name in applauncher
+			if (!super_pressed && server->applauncher_opened && 
+				syms[i] != XKB_KEY_Shift_L && syms[i] != XKB_KEY_Shift_R &&
+				syms[i] != XKB_KEY_Left && syms[i] != XKB_KEY_Right) {
+				// pressing arrow up/down navigation
+				if (syms[i] == XKB_KEY_Up && server->filteredList[0] != NULL) {
+					// Check if there is actually a next item to scroll to
+					if (server->scroll_offset > 0) {
+						server->scroll_offset--;
+						if (server->ssids[0] != NULL) {
+							free(server->ssids[0]);
+							server->ssids[0] = NULL;
+						}
+						server->buff[0] = '\0';
+						server->ssids[0] = strdup(server->filteredList[server->scroll_offset]->name);
+						redraw_applauncher(server);
+						redraw_applist(server);
+
+						// Clean up keyname memory
+						if (keyname) {
+							free(keyname);
+							keyname = NULL;
+						}
+					}
+					return;
+				}
+				if (syms[i] == XKB_KEY_Down && server->filteredList[0] != NULL) {
+					// Check if there is actually a next item to scroll to
+					if (server->filteredList[server->scroll_offset + 1] != NULL) {
+						server->scroll_offset++;
+						if (server->ssids[0] != NULL) {
+							free(server->ssids[0]);
+							server->ssids[0] = NULL;
+						}
+						server->buff[0] = '\0';
+						server->ssids[0] = strdup(server->filteredList[server->scroll_offset]->name);
+						
+						redraw_applauncher(server);
+						redraw_applist(server);
+
+						// Clean up keyname memory
+						if (keyname) {
+							free(keyname);
+							keyname = NULL;
+						}
+					}
+					return;
+				}
+				// if user types /refresh then refresh the list
+				// server->buff and server->ssids[0] represents
+				// the text in the prompt
+				if (syms[i] == XKB_KEY_Return && strcmp(server->buff, "/refresh") == 0) {
+					// cleaning up =
+					server->applauncher_opened = false;
+					free_desktop_items(server);
+					if (server->applauncher_wlr_buffer) {
+						wlr_buffer_drop(server->applauncher_wlr_buffer);
+						wlr_scene_node_destroy(&server->applauncher_scene_buffer->node);
+						server->applauncher_wlr_buffer = NULL;
+						server->applauncher_scene_buffer = NULL;
+					}
+					if (server->applist_wlr_buffer) {
+						wlr_buffer_drop(server->applist_wlr_buffer);
+						wlr_scene_node_destroy(&server->applist_scene_buffer->node);
+						server->applist_wlr_buffer = NULL;
+						server->applist_scene_buffer = NULL;
+					}
+					if (server->ssids[0] != NULL) {
+						free(server->ssids[0]);
+						server->ssids[0] = NULL;
+					}
+					// Clean up keyname memory
+					if (keyname) {
+						free(keyname);
+						keyname = NULL;
+					}
+					// prepare data for aplauncher
+					setup_desktop_items(server);
+					process_directory(server, server->local_share_path, false);
+					process_directory(server, "/usr/local/share/applications", false);
+					process_directory(server, "/usr/share/applications", false);
+					process_directory(server, "/usr/local/bin", true);
+					process_directory(server, "/usr/bin", true);
+					server->buff[0] = '\0';
+					server->scroll_offset = 0;
+					return;
+				}
+				// launching selected item
+				if (syms[i] == XKB_KEY_Return && server->filteredList[0] != NULL) {
+					// cleaning up =
+					server->applauncher_opened = false;
+					if (server->applauncher_wlr_buffer) {
+						wlr_buffer_drop(server->applauncher_wlr_buffer);
+						wlr_scene_node_destroy(&server->applauncher_scene_buffer->node);
+						server->applauncher_wlr_buffer = NULL;
+						server->applauncher_scene_buffer = NULL;
+					}
+					if (server->applist_wlr_buffer) {
+						wlr_buffer_drop(server->applist_wlr_buffer);
+						wlr_scene_node_destroy(&server->applist_scene_buffer->node);
+						server->applist_wlr_buffer = NULL;
+						server->applist_scene_buffer = NULL;
+					}
+					if (server->ssids[0] != NULL) {
+						free(server->ssids[0]);
+						server->ssids[0] = NULL;
+					}
+					// Clean up keyname memory
+					if (keyname) {
+						free(keyname);
+						keyname = NULL;
+					}
+					//---------------- RUN THE COMMAND ----------------//
+					///fprintf(stderr, "Executing %s\n", server->filteredList[server->scroll_offset]->exec);
+					run_cmd(server->filteredList[server->scroll_offset]->exec);
+					server->buff[0] = '\0';
+					server->scroll_offset = 0;
+					return;
+				}
+
+				handle_keysym_input(syms[i], server->buff, sizeof(server->buff), &server->ssids[0]);
+
+				// creating a filtered list from typing the app name (key word to search)
+				filtered_list(server->all_items, items_count, server->filteredList, server->buff);
+				redraw_applauncher(server);
+				redraw_applist(server);
+				server->scroll_offset = 0;
+			}
 			// Typing the password
 			if (server->network_password_prompt) {
-				char name[64];
-				if (xkb_keysym_get_name(syms[i], name, sizeof(name)) > 0) {
-					// Skip known modifiers
-					if (strcmp(name, "Shift_L") == 0 || strcmp(name, "Shift_R") == 0 ||
-						strcmp(name, "Control_L") == 0 || strcmp(name, "Control_R") == 0 ||
-						strcmp(name, "Alt_L") == 0 || strcmp(name, "Alt_R") == 0 ||
-						strcmp(name, "Super_L") == 0 || strcmp(name, "Super_R") == 0 ||
-						strcmp(name, "Meta_L") == 0 || strcmp(name, "Meta_R") == 0 ||
-						strcmp(name, "Caps_Lock") == 0) {
-						continue;
-					}
-					char str_buff[8];
-					int len = xkb_keysym_to_utf8(syms[i], str_buff, sizeof(str_buff));
-
-					if (syms[i] == XKB_KEY_BackSpace) {
-						size_t buflen = strlen(server->buff);
-						if (buflen > 0) {
-							while (buflen > 0 && ((server->buff[buflen - 1] & 0xC0) == 0x80)) {
-								buflen = buflen - 1;
-							}
-							server->buff[--buflen] = '\0';
-						}
-						if (server->ssids[3]) {
-							free(server->ssids[3]);
-							server->ssids[3] = NULL;
-						}
-						server->ssids[3] = strdup(server->buff);
-					}
-					else if (len > 0) {
-						if (!server->buff[0]) {
-							strncpy(server->buff, str_buff, sizeof(server->buff) - 1);
-						}
-						else {
-							strncat(server->buff, str_buff, sizeof(server->buff) - strlen(server->buff) - 1);
-						}
-						if (server->ssids[3]) {
-							free(server->ssids[3]);
-							server->ssids[3] = NULL;
-						}
-						server->ssids[3] = strdup(server->buff);
-					}
+				handle_keysym_input(
+					syms[i],
+					server->buff,
+					sizeof(server->buff),
+					&server->ssids[3]
+				);
+				// Clean up keyname memory
+				if (keyname) {
+					free(keyname);
+					keyname = NULL;
 				}
+				return; // do NOT send to client, keep the text in the prompt only
 			}
 			// Change keyboard layout
 			if (syms[i] == XKB_KEY_ISO_Next_Group) {
@@ -789,14 +1207,29 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 			// Multimedia keys support
 			else if (syms[i] == XKB_KEY_XF86AudioPlay || syms[i] == XKB_KEY_XF86AudioPause ||
 				syms[i] == XKB_KEY_XF86AudioMute) {
+				// Clean up keyname memory
+				if (keyname) {
+					free(keyname);
+					keyname = NULL;
+				}
 				run_cmd(keyboard->server->play_pause);
 				return;
 			}
 			else if (syms[i] == XKB_KEY_XF86AudioRaiseVolume) {
+				// Clean up keyname memory
+				if (keyname) {
+					free(keyname);
+					keyname = NULL;
+				}
 				run_cmd(keyboard->server->volume_up);
 				return;
 			}
 			else if (syms[i] == XKB_KEY_XF86AudioLowerVolume) {
+				// Clean up keyname memory
+				if (keyname) {
+					free(keyname);
+					keyname = NULL;
+				}
 				run_cmd(keyboard->server->volume_down);
 				return;
 			}
@@ -811,6 +1244,11 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 				else {
 					wlr_log(WLR_ERROR, "'brightness_path' is NULL in 'keyboard_handle_key'");
 				}
+				// Clean up keyname memory
+				if (keyname) {
+					free(keyname);
+					keyname = NULL;
+				}
 				return;
 			}
 			else if (syms[i] == XKB_KEY_XF86MonBrightnessDown) {
@@ -824,17 +1262,33 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 				else {
 					wlr_log(WLR_ERROR, "'brightness_path' is NULL in 'keyboard_handle_key'");
 				}
+				// Clean up keyname memory
+				if (keyname) {
+					free(keyname);
+					keyname = NULL;
+				}
 				return;
 			}
 			else if (syms[i] == XKB_KEY_XF86Switch_VT_1) {
 				wlr_session_change_vt(server->session, 1);
+				// Clean up keyname memory
+				if (keyname) {
+					free(keyname);
+					keyname = NULL;
+				}
 				return;
 			}
 			else if (syms[i] == XKB_KEY_XF86Switch_VT_2) {
 				wlr_session_change_vt(server->session, 2);
+				// Clean up keyname memory
+				if (keyname) {
+					free(keyname);
+					keyname = NULL;
+				}
 				return;
 			}
 		}
+		
 		// Check if the Super key is pressed or released
 		if (syms[i] == XKB_KEY_Super_L || syms[i] == XKB_KEY_Super_R) {
 			keyboard->server->super_key_down = (event->state == WL_KEYBOARD_KEY_STATE_PRESSED);
@@ -882,13 +1336,29 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 		free(keyname);
 		keyname = NULL;
 	}
-	// Pass the key to the client if not handled by keybindings
-	if (!keyboard->server->keybind_handled) {
+
+	// don't send keystrokes to clients while applauncher is opened
+	if (server->applauncher_opened) {
+		return;
+	}
+
+	// Check if this specific key is a modifier
+	bool is_modifier = (syms[0] == XKB_KEY_Control_L || syms[0] == XKB_KEY_Control_R ||
+						syms[0] == XKB_KEY_Alt_L || syms[0] == XKB_KEY_Alt_R ||
+						syms[0] == XKB_KEY_Super_L || syms[0] == XKB_KEY_Super_R ||
+						syms[0] == XKB_KEY_Shift_L || syms[0] == XKB_KEY_Shift_R);
+
+	// Pass the key to the client if:
+	// 1. It wasn't a handled keybinding
+	// 2. OR it's a KEY_RELEASE event (we usually want to release everything we press)
+	// 3. OR it's a modifier key (to keep the seat state sane)
+	if (!keyboard->server->keybind_handled || \
+		event->state == WL_KEYBOARD_KEY_STATE_RELEASED || is_modifier) {
 		wlr_seat_set_keyboard(server->seat, keyboard->wlr_keyboard);
 		wlr_seat_keyboard_notify_key(keyboard->server->seat,
-									 event->time_msec,
-									 event->keycode,
-									 event->state);
+									event->time_msec,
+									event->keycode,
+									event->state);
 	}
 }
 
@@ -918,8 +1388,8 @@ static void server_new_keyboard(struct woodland_server *server, struct wlr_input
 		.options = "grp:alt_shift_toggle" // Option to switch layout with Alt+Shift
 	};
 	struct xkb_keymap *keymap = xkb_keymap_new_from_names(context,
-														  &rules,
-														  XKB_KEYMAP_COMPILE_NO_FLAGS);
+														&rules,
+														XKB_KEYMAP_COMPILE_NO_FLAGS);
 	if (!keymap) {
 		wlr_log(WLR_ERROR, "Failed to create XKB keymap.");
 		xkb_context_unref(context);
@@ -966,7 +1436,7 @@ static void new_virtual_keyboard_handler(struct wl_listener *listener, void *dat
 
 	/* Create a new woodland_keyboard structure to represent the virtual keyboard. */
 	struct woodland_keyboard *keyboard = calloc(1, sizeof(struct woodland_keyboard));
-	if ((!virtual_keyboard) || (virtual_keyboard == NULL)) {
+	if ((!keyboard) || (keyboard == NULL)) {
 		wlr_log(WLR_ERROR, "'keyboard' memory alloc failed in 'new_virtual_keyboard_handler'.");
 		return;
 	}
@@ -1093,41 +1563,12 @@ static struct woodland_view *get_toplevel_for_surface(struct woodland_server *se
 	return NULL;
 }
 
-static struct woodland_view *desktop_toplevel_at(struct woodland_server *server,
-																		double lx,
-																		double ly,
-																		struct wlr_surface **surface,
-																		double *sx,
-																		double *sy) {
-	/* This returns the topmost node in the scene at the given layout coords.
-	 * We only care about surface nodes as we are specifically looking for a
-	 * surface in the surface tree of a woodland_view. */
-	struct wlr_scene_node *node = wlr_scene_node_at(&server->scene->tree.node, lx, ly, sx, sy);
-	if (node == NULL || node->type != WLR_SCENE_NODE_BUFFER) {
-		return NULL;
-	}
-	struct wlr_scene_buffer *scene_buffer = wlr_scene_buffer_from_node(node);
-	struct wlr_scene_surface *scene_surface = wlr_scene_surface_try_from_buffer(scene_buffer);
-	if (!scene_surface) {
-		return NULL;
-	}
-
-	*surface = scene_surface->surface;
-	/* Find the node corresponding to the woodland_view at the root of this
-	 * surface tree, it is the only one for which we set the data field. */
-	struct wlr_scene_tree *tree = node->parent;
-	while (tree != NULL && tree->node.data == NULL) {
-		tree = tree->node.parent;
-	}
-	return tree->node.data;
-}
-
 static void process_cursor_move(struct woodland_server *server) {
 	struct woodland_view *toplevel = server->grabbed_toplevel;
 	double base_dx = server->cursor->x - server->grab_x;
 	double base_dy = server->cursor->y - server->grab_y;
 	// Move a single window
-	wlr_scene_node_set_position(&toplevel->scene_tree->node, base_dx, base_dy);
+	woodland_scene_node_set_position(toplevel, base_dx, base_dy);
 }
 
 static void process_cursor_resize(struct woodland_server *server) {
@@ -1137,9 +1578,11 @@ static void process_cursor_resize(struct woodland_server *server) {
 	}
 	if (server->cursor_mode == WOODLAND_CURSOR_RESIZE) {
 		wlr_xdg_toplevel_set_resizing(toplevel->xdg_toplevel, true);
+		wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
 	}
 	else {
 		wlr_xdg_toplevel_set_resizing(toplevel->xdg_toplevel, false);
+		wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
 	}
 	double border_x = server->cursor->x - server->grab_x;
 	double border_y = server->cursor->y - server->grab_y;
@@ -1172,11 +1615,12 @@ static void process_cursor_resize(struct woodland_server *server) {
 	}
 
 	// Existing single window resize logic
-	wlr_scene_node_set_position(&toplevel->scene_tree->node,
+	woodland_scene_node_set_position(toplevel,
 								 new_left - toplevel->xdg_toplevel->base->current.geometry.x,
 								 new_top - toplevel->xdg_toplevel->base->current.geometry.y);
 
-	wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, new_right - new_left, new_bottom - new_top);
+	woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel, new_right - new_left, new_bottom - new_top);
+	toplevel->resized = true;
 }
 
 static void process_cursor_motion(struct woodland_server *server, uint32_t time) {
@@ -1261,6 +1705,9 @@ static void server_cursor_motion(struct wl_listener *listener, void *data) {
 		return;
 	}
 
+	struct wlr_box output_box;
+	wlr_output_layout_get_box(server->output_layout, output, &output_box);
+
 	// Get the root scene tree node for panning/zooming
 	struct wlr_scene_tree *pan_zoom_root = wlr_scene_tree_from_node(&server->scene->tree.node);
 	if (!pan_zoom_root) {
@@ -1276,286 +1723,234 @@ static void server_cursor_motion(struct wl_listener *listener, void *data) {
 	double right_threshold = (output_width / server->zoom_factor) - 10;
 	double bottom_threshold = (output_height / server->zoom_factor) - 10;
 
-	// Calculate the full content size with zoom applied
-	int32_t zoomed_width = (int32_t)(output_width * server->zoom_factor);
-	int32_t zoomed_height = (int32_t)(output_height * server->zoom_factor);
-
-	// Keep track of panning offsets (shared static for simplicity)
-	static double pan_x = 0;
-	static double pan_y = 0;
-
+	// Inside server_cursor_motion
 	if (server->zoom_factor > 1.0) {
-		// Cursor is near the edges — initiate panning
 		if (server->cursor->x < left_threshold ||
 			server->cursor->x > right_threshold ||
 			server->cursor->y < top_threshold ||
 			server->cursor->y > bottom_threshold) {
 
-			// Compute the desired pan target based on cursor position
-			double pan_x_target = (server->cursor->x / (double)output_width) *
-												(zoomed_width - output_width);
-			double pan_y_target = (server->cursor->y / (double)output_height) *
-												(zoomed_height - output_height);
+			// Calculate the total "slidable" distance
+			int w_deduct = (server->transformed_width * server->zoom_speed_m);
+			int w_calc = (server->transformed_width / round(w_deduct));
+			int h_deduct = 0;
+			int h_calc = 0;
+			// we need to adjust the height depending on whether we use mouse or touchpad
+			if (server->touchpad_zooming) { // if zooming with touchpad
+				h_deduct = (server->transformed_height * server->zoom_speed_m);
+				h_calc = (server->transformed_height / round(h_deduct)) - 5;
+			}
+			else { // if zooming with mouse
+				h_deduct = (server->transformed_height * server->zoom_speed);
+				h_calc = (server->transformed_height / round(h_deduct)) - 10;
+			}
 
-			// Smoothly move pan position toward the target using zoom_speed
-			pan_x += (pan_x_target - pan_x) * server->zoom_speed_m;
-			pan_y += (pan_y_target - pan_y) * server->zoom_speed_m;
+			double max_pan_x = ((output_box.width * server->zoom_factor) - output_box.width) + w_calc;
+			double max_pan_y = ((output_box.height * server->zoom_factor) - output_box.height) + h_calc;
 
-			// Clamp pan to avoid showing outside the zoomed area
-			if (pan_x < 0) {
-				pan_x = 0;
+			// Determine the target based on cursor percentage of screen
+			// If cursor is at 'width', target is '-max_pan_x'
+			double target_x = -(server->cursor->x / (double)output_box.width) * max_pan_x;
+			double target_y = -(server->cursor->y / (double)output_box.height) * max_pan_y;
+
+			// Smoothly move the current pan toward the target
+			server->pan_x += (target_x - server->pan_x) * server->zoom_speed_m;
+			server->pan_y += (target_y - server->pan_y) * server->zoom_speed_m;
+
+			// Final safety clamp
+			server->pan_x = fmin(0, fmax(server->pan_x, -max_pan_x));
+			server->pan_y = fmin(0, fmax(server->pan_y, -max_pan_y));
+
+			wlr_scene_node_set_position(&pan_zoom_root->node, round(server->pan_x), round(server->pan_y));
+		}
+	}
+
+	// disable toplevel focus when clicking hot corners for windowlist and menu
+	// Local cache of coordinates and dimensions
+	int cx = (int)server->cursor->x;
+	int cy = (int)server->cursor->y;
+	float zoom = server->zoom_factor;
+
+	// Pre-calculate the threshold boundaries
+	int right_boundary  = output_box.width  - (server->wl_active_area_x * zoom);
+	int top_boundary    = server->wl_active_area_y * zoom;
+	int left_boundary   = server->mn_active_area_x * zoom;
+	int bottom_boundary = output_box.height - (server->mn_active_area_y * zoom);
+
+	// Consolidated Logic
+	// Determine if we are in the "active" corners/zones first
+	bool in_top_right = (cx > right_boundary && cy < top_boundary);
+	bool in_bottom_left = (cx < left_boundary && cy > bottom_boundary);
+
+	if (in_top_right || in_bottom_left) {
+		server->disable_toplevel_focus = true;
+	} 
+	else {
+		// If we aren't in a trigger zone, we usually enable focus, 
+		// unless the 'titles_ly_hovered' state dictates otherwise.
+		if (server->titles_ly_hovered && server->disable_toplevel_focus) {
+			// Keep it disabled (this replicates your second 'else if' block)
+			server->disable_toplevel_focus = true; 
+		}
+		else {
+			server->disable_toplevel_focus = false;
+		}
+	}
+
+	// Local Cache for Performance
+	int ow = output_box.width;
+	int oh = output_box.height;
+
+	// Logic for disable_toplevel_focus (Consolidated)
+	if (in_top_right || in_bottom_left) {
+		server->disable_toplevel_focus = true;
+	}
+	else if (!(server->disable_toplevel_focus && server->titles_ly_hovered)) {
+		// Only re-enable focus if we aren't currently hovering an active menu/title list
+		server->disable_toplevel_focus = false;
+	}
+
+	// Panel Show/Hide Logic
+	bool in_panel_trigger = (cx > (ow - PPANEL_WIDTH) && cy >= (oh - (PPANEL_HEIGHT / 2)));
+
+	if (in_panel_trigger && server->panel_is_hidden) { // show panel
+		server->panel_is_hidden = false;
+		server->disable_click = true;
+		if (!server->time_update_timer) {
+			server->time_update_timer = wl_event_loop_add_timer(server->event_loop, update_time, server);
+		}
+		wl_event_source_timer_update(server->time_update_timer, 1000);
+	}
+	else if (!in_panel_trigger && !server->panel_is_hidden) {
+		// Only hide if mouse moved away AND no popups are active
+		if (cx < (ow - PPANEL_WIDTH) || cy < (oh - (PPANEL_HEIGHT))) {
+			if (!server->time_is_clicked && !server->network_is_clicked) {
+				server->panel_is_hidden = true;
+				server->disable_click = false;
+				// Batch reset state
+				server->volume_change = server->brightness_change = false;
+				server->time_hovered = server->network_hovered = false;
+				if (server->panel_buffer) {
+					wlr_scene_node_set_enabled(&server->panel_buffer->node, false);
+				}
+				if (server->time_update_timer) {
+					wl_event_source_remove(server->time_update_timer);
+					server->time_update_timer = NULL;
+				}
+				if (server->network_buffer) {
+					wlr_scene_node_set_enabled(&server->network_buffer->node, false);
+					wlr_scene_node_destroy(&server->network_buffer->node);
+					server->network_buffer = NULL;
+				}
+				if (server->wifi_scan_timer) {
+					wl_event_source_remove(server->wifi_scan_timer);
+					server->wifi_scan_timer = NULL;
+				}
 			}
-			if (pan_y < 0) {
-				pan_y = 0;
+		}
+	}
+
+	// Scene Node Interaction (The "Heavy" part)
+	double nx;
+	double ny;
+	struct wlr_scene_node *node = wlr_scene_node_at(&server->scene->tree.node, cx, cy, &nx, &ny);
+
+	// set volume change in any case whether the panel is active or not
+	server->volume_change = (ow - (ow - 3)) && (oh - (oh + 3));
+
+	if (node && node->data) {
+		uintptr_t type = (uintptr_t)node->data; // Cast the enum back from data
+
+		switch (type) {
+			case NODE_TYPE_PANEL: {
+				if (server->panel_is_hidden) {
+					break;
+				}
+				server->disable_click = false;
+
+				// Volume (nx > 185, ny > 3)
+				server->volume_change = (nx > 185);
+
+				// Brightness (nx 145-185)
+				server->brightness_change = (nx > 145 && nx < 185);
+
+				// Time (nx 60-138)
+				server->time_hovered = (nx > 60 && nx < 138);
+
+				// Network (nx 7-50) <--- THIS IS WHAT YOUR CLICK HANDLER NEEDS
+				server->network_hovered = (nx >= 7 && nx < 50);
+				break;
 			}
-			if (pan_x > zoomed_width - output_width) {
-				pan_x = zoomed_width - output_width;
+
+			case NODE_TYPE_NETWORK_APPLET: {
+				server->disable_click = false;
+				server->network_ly_hovered = true;
+				int new_ssid_pos = (int)ny / 26;
+				if (server->SsidPosition != new_ssid_pos) {
+					server->SsidPosition = new_ssid_pos;
+					// Only redraw applet here if needed
+				}
+				break;
 			}
-			if (pan_y > zoomed_height - output_height) {
-				pan_y = zoomed_height - output_height;
+
+			case NODE_TYPE_WINDOWLIST: {
+				if (!server->titles_clicked) {
+					break;
+				}
+				server->disable_click = false;
+
+				// Calculate row as a signed int first
+				int row = (int)(ny - 3) / 40;
+
+				// Guard against negative values before comparing to size_t
+				if (row >= 0 && (size_t)row != server->TitlesPosition) {
+					server->TitlesPosition = (row < server->titles_counter) ? (size_t)row : 0;
+
+					if (server->titles_scene_buffer) {
+						wlr_scene_node_destroy(&server->titles_scene_buffer->node);
+						server->titles_scene_buffer = NULL;
+					}
+					list_titles(server);
+				}
+				server->titles_ly_hovered = true;
+				break;
 			}
-			// Apply the pan offset by shifting the scene node
-			wlr_scene_node_set_position(&pan_zoom_root->node, -pan_x, -pan_y);
+
+			case NODE_TYPE_MENU: {
+				if (!server->menu_clicked) {
+					break;
+				}
+				server->disable_click = false;
+
+				int row = (int)(ny - 3) / 40;
+
+				// Guard against negative and compare with explicit cast
+				if (row >= 0 && (size_t)row != server->menuPosition) {
+					server->menuPosition = (size_t)row;
+
+					if (server->menu_scene_buffer) {
+						wlr_scene_node_destroy(&server->menu_scene_buffer->node);
+						server->menu_scene_buffer = NULL;
+					}
+					show_menu(server);
+				}
+				server->menu_ly_hovered = true;
+				break;
+			}
 		}
 	}
 	else {
-		// Reset pan offsets when zoom factor is 1.0
-		pan_x = 0;
-		pan_y = 0;
-		wlr_scene_node_set_position(&pan_zoom_root->node, 0, 0);
+		// Clear hovered states if not over a valid node
+		server->titles_ly_hovered = false;
+		server->menu_ly_hovered = false;
+		server->network_hovered = false;
+		server->time_hovered = false;
+		server->disable_click = false;
 	}
 
-	// Show/hide panel
-	double nx = 0;
-	double ny = 0;
-
-	// Get the buffer local coordinates
-	struct wlr_scene_node *node = wlr_scene_node_at(&server->scene->tree.node,
-													server->cursor->x,
-													server->cursor->y,
-													&nx,
-													&ny);
-
-	struct wlr_box output_box;
-	wlr_output_layout_get_box(server->output_layout, output, &output_box);
-
-	// Static flags to track previous hover state
-	static bool cursor_in_panel_region = false;
-	static bool cursor_in_volume_region = false;
-	static bool cursor_in_brightness_region = false;
-	static bool cursor_in_time_region = false;
-	static bool cursor_in_network_region = false;
-	static bool cursor_in_menu_list_region = false;
-	static bool cursor_in_window_list_region = false;
-	static bool cursor_in_network_applet_region = false;
-
-	bool in_panel_region = server->cursor->x > output_box.width - PPANEL_WIDTH &&
-												server->cursor->y >= (output_box.height - 7);
-
-	if (in_panel_region && !cursor_in_panel_region) {
-		///fprintf(stderr, "Show panel\n");
-		if (!server->time_update_timer) {
-			server->time_update_timer = wl_event_loop_add_timer(server->event_loop, update_time, server);
-			wl_event_source_timer_update(server->time_update_timer, 1000);
-		}
-		else {
-			wl_event_source_timer_update(server->time_update_timer, 1000);
-		}
-		server->panel_is_hidden = false;
-	}
-	else if ((server->cursor->x < (output_box.width - PPANEL_WIDTH) &&
-		!server->time_is_clicked && !server->network_is_clicked) ||
-		(server->cursor->y < (output_box.height - 45) &&
-		!server->time_is_clicked &&
-		!server->network_is_clicked)) {
-
-		if (!server->panel_is_hidden) {
-			///fprintf(stderr, "Hide panel\n");
-			server->panel_is_hidden = true;
-			server->volume_change = false;
-			server->brightness_change = false;
-			server->time_hovered = false;
-			server->time_is_clicked = false;
-			server->network_hovered = false;
-			server->network_ly_hovered = false;
-			server->network_is_clicked = false;
-			if (server->time_update_timer && server->panel_buffer) {
-				wlr_scene_node_set_enabled(&server->panel_buffer->node, false);
-				wl_event_source_remove(server->time_update_timer);
-				server->time_update_timer = NULL;
-			}
-		}
-	}
-	cursor_in_panel_region = in_panel_region;
-
-	// Activate panel widgets on mouse hover
-	if (node->data) {
-		const char *retrieved = (const char *)node->data;
-
-		// Check if the mouse cursor is hovering over the panel title
-		if (strcmp(retrieved, "woodland_panel") == 0) {
-			///fprintf(stderr, "server->scene->tree.node.data: %s\n", retrieved);
-			///fprintf(stderr, "nx: %d\n", (int)nx);
-			///fprintf(stderr, "ny: %d\n", (int)ny);
-
-			// Volume change
-			bool in_volume_region = !server->panel_is_hidden && (int)nx > 185 && (int)ny > 3;
-			if (in_volume_region) {
-				///fprintf(stderr, "Volume change hover\n");
-				server->volume_change = true;
-				cursor_in_volume_region = false;
-			}
-			else if (!in_volume_region && !cursor_in_volume_region) {
-				///fprintf(stderr, "Volume change leave\n");
-				server->volume_change = false;
-				cursor_in_volume_region = true;
-			}
-			cursor_in_volume_region = in_volume_region;
-
-			// Brightness change
-			bool in_brightness_region = !server->panel_is_hidden && nx > 145 && nx < 185;
-			if (in_brightness_region && !cursor_in_brightness_region) {
-				///fprintf(stderr, "Brightness change hover\n");
-				server->brightness_change = true;
-			}
-			else if (!in_brightness_region && cursor_in_brightness_region) {
-				///fprintf(stderr, "Brightness change leave\n");
-				server->brightness_change = false;
-			}
-			cursor_in_brightness_region = in_brightness_region;
-
-			// Time hovered
-			bool in_time_region = !server->panel_is_hidden && nx > 60 && nx < 138;
-			if (in_time_region && !cursor_in_time_region) {
-				///fprintf(stderr, "Time hovered\n");
-				server->time_hovered = true;
-			}
-			else if (!in_time_region && cursor_in_time_region) {
-				///fprintf(stderr, "Time leave\n");
-				server->time_hovered = false;
-			}
-			cursor_in_time_region = in_time_region;
-
-			// Network hovered
-			bool in_network_region = !server->panel_is_hidden && nx >= 7 && nx < 50;
-			if (in_network_region && !cursor_in_network_region) {
-				///fprintf(stderr, "Network hovered\n");
-				server->network_hovered = true;
-			}
-			else if (!in_network_region && cursor_in_network_region) {
-				///fprintf(stderr, "Network leave\n");
-				server->network_hovered = false;
-			}
-			cursor_in_network_region = in_network_region;
-		}
-		bool in_network_applet_region = !server->panel_is_hidden &&
-										strcmp(retrieved, "woodland_network_applet") == 0 &&
-										nx >= 3 &&
-										ny < (PNETWORK_HEIGHT - 3);
-		if (in_network_applet_region) {
-			// Inside network applet
-			////fprintf(stderr, "Entered the network applet dialog region\n");
-			server->network_ly_hovered = true;
-
-			// SsidPosition converts the current mouse cursor to the network ssid name in the list
-			server->SsidPosition = (int)ny / 26;
-			///fprintf(stderr, "the position of item: %d\n", server->SsidPosition);
-		}
-		else if (!in_network_applet_region && cursor_in_network_applet_region) {
-
-			///fprintf(stderr, "Left the network applet dialog region\n");
-			server->network_ly_hovered = false;
-		}
-		cursor_in_network_applet_region = in_network_applet_region;
-
-		// Hovering over the titles in the windowlist dialog.
-		bool in_windowlist_region = strcmp(retrieved, "woodland_windowlist") == 0 &&
-											server->titles_clicked &&
-											nx >= 3 &&
-											ny < (server->titles_dialog_size - 3);;
-		if (in_windowlist_region) {
-			///fprintf(stderr, "in_windowlist_region\n");
-			int relative_y = ny - 3; // Adjust for top margin
-			int row = relative_y / 40;
-			server->TitlesPosition = row;
-
-			if (row >= 0 && row < server->titles_counter) {
-				server->TitlesPosition = row;
-			}
-			else {
-				server->TitlesPosition = -1;
-			}
-
-			if (server->titles_scene_buffer) {
-				wlr_scene_node_destroy(&server->titles_scene_buffer->node);
-				server->titles_scene_buffer = NULL;
-			}
-			list_titles(server);
-			
-			server->titles_ly_hovered = true;
-			cursor_in_window_list_region = true;
-			///fprintf(stderr, "server->TitlesPosition: %d\n", (int)server->TitlesPosition);
-		}
-		else if (!in_windowlist_region && cursor_in_window_list_region) {
-			///fprintf(stderr, "Left the window list region\n");
-			server->titles_ly_hovered = false;
-			cursor_in_window_list_region = false;
-		}
-		cursor_in_window_list_region = in_windowlist_region;
-
-		// Hovering over the titles in the menu dialog.
-		bool in_menu_region = strcmp(retrieved, "woodland_menu") == 0 &&
-											server->menu_clicked &&
-											nx >= 3 &&
-											nx <= 197 &&
-											ny > 3 &&
-											ny < (server->menu_dialog_size - 3);
-		if (in_menu_region) {
-			///fprintf(stderr, "in_menu_region\n");
-			int relative_y = ny - 3; // Adjust for top margin
-			int row = relative_y / 40;
-			server->menuPosition = row;
-
-			if (server->menu_scene_buffer) {
-				wlr_scene_node_destroy(&server->menu_scene_buffer->node);
-				server->menu_scene_buffer = NULL;
-			}
-			show_menu(server);
-			
-			server->menu_ly_hovered = true;
-			cursor_in_menu_list_region = true;
-		}
-		else if (!in_menu_region && cursor_in_menu_list_region) {
-			///fprintf(stderr, "Left the menu list region\n");
-			server->menu_ly_hovered = false;
-			cursor_in_menu_list_region = false;
-		}
-		else {
-			server->menu_ly_hovered = false;
-		}
-		cursor_in_menu_list_region = in_menu_region;
-	}
-
+	// Standard Wayland Motion boilerplate
 	wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x, event->delta_y);
-	// Sends relative motion used mostly in games for 360-degree mouse view
-	wlr_relative_pointer_manager_v1_send_relative_motion(server->wlr_relative_pointer_manager,
-														server->seat,
-														(uint64_t)event->time_msec * 1000,
-														event->delta_x,
-														event->delta_y,
-														event->unaccel_dx,
-														event->unaccel_dy);
-	// Handle focus changes and client-side pointer motion notification
 	process_cursor_motion(server, event->time_msec);
-}
-
-/* This function is a workaround for GTK apps to stop them from auto-resizing when scaling/zooming */
-static void keep_scaling_factor(struct woodland_server *server) {
-	struct woodland_view *iter;
-	wl_list_for_each_reverse(iter, &server->toplevels, link) {
-		wlr_xdg_toplevel_set_resizing(iter->xdg_toplevel, true);
-	}
-	return;
 }
 
 static void server_cursor_axis(struct wl_listener *listener, void *data) {
@@ -1595,52 +1990,59 @@ static void server_cursor_axis(struct wl_listener *listener, void *data) {
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
 
-	/* This event is forwarded by the cursor when a pointer emits an axis event,
-	 * for example when you move the scroll wheel. */
-
+	// touchpad and mouse debounce logic
+	double ZoomFactor = 0.0;
 	double delta = event->delta;
-	double ZoomFactor = 0;
+	static double last_delta = 0.0;
+	static double smoothed_delta = 0.0;
 	static double MouseZoomFactor = 0.2;
+	static double accumulated_delta = 0.0;
 	static double TouchpadZoomFactor = 0.01;
 
-	// Adjust delta based on input source (mouse wheel vs touchpad)
+	// clamp extreme deltas
+	// Some touchpads occasionally produce spikes.
+	if (delta > MAX_SCROLL_DELTA) {
+		delta = MAX_SCROLL_DELTA;
+	}
+	if (delta < -MAX_SCROLL_DELTA) {
+		delta = -MAX_SCROLL_DELTA;
+	}
+
 	if (event->source == WL_POINTER_AXIS_SOURCE_FINGER) {
-		// Scale the delta for touchpad events
+		server->touchpad_zooming = true;
 		delta *= TOUCHPAD_SCROLL_SCALE;
 		ZoomFactor = TouchpadZoomFactor;
-		server->zoom_speed_m = server->zoom_speed + 0.02;
+		server->zoom_speed_m = (server->zoom_speed + 0.03);
+
+		// exponential smoothing
+		smoothed_delta = (TOUCHPAD_SMOOTHING * delta) + ((1.0 - TOUCHPAD_SMOOTHING) * smoothed_delta);
+		accumulated_delta += smoothed_delta;
+
+		if (fabs(accumulated_delta) < TOUCHPAD_THRESHOLD) {
+			return;
+		}
+		delta = accumulated_delta;
+		accumulated_delta = 0;
 	}
 	else {
-		// Scale the delta for mouse wheel events
+		server->touchpad_zooming = false;
 		delta *= MOUSE_SCROLL_SCALE;
 		ZoomFactor = MouseZoomFactor;
 		server->zoom_speed_m = server->zoom_speed;
 	}
 
-	//------- Filtering out small scroll values -----//
-	// Define a variable to hold the threshold value
-	static double scroll_debounce_threshold = SCROLL_DEBOUNCE_THRESHOLD;
-
-	// Calculate the average scroll value over a certain period
-	static double sum_delta = 0;
-	static int num_samples = 0;
-	const int max_samples = 10;
-
-	sum_delta += delta;
-	num_samples++;
-
-	if (num_samples >= max_samples) {
-		double avg_delta = sum_delta / num_samples;
-		scroll_debounce_threshold = avg_delta * 0.3; // Adjust the threshold based on average scroll value
-		sum_delta = 0;
-		num_samples = 0;
+	if (event->source == WL_POINTER_AXIS_SOURCE_WHEEL && event->delta_discrete != 0) {
+		delta = event->delta_discrete;
 	}
 
-	// Use the variable in your code
-	if (fabs(delta) < scroll_debounce_threshold) {
-		return;
+	// eliminate jitter by resetting when direction changes
+	if ((delta > 0 && last_delta < 0) || (delta < 0 && last_delta > 0)) {
+		accumulated_delta = 0;
 	}
 
+	last_delta = delta;
+
+	// managing panels and hot corners
 	struct wlr_box output_box;
 	wlr_output_layout_get_box(server->output_layout, output, &output_box);
 
@@ -1703,69 +2105,131 @@ static void server_cursor_axis(struct wl_listener *listener, void *data) {
 			}
 		}
 	}
-	//------- Zooming logic -------//
-	// Zooming on scrolling on the left-top corner of the screen or Super key + mouse scroll
-	if ((server->cursor->x < 5 && server->cursor->y < 5) || server->super_key_down) {
-		switch (event->orientation) {
-			case WL_POINTER_AXIS_VERTICAL_SCROLL:
-			if (delta > 0) {
-				///fprintf(stderr, "Mouse wheel down\n");
-				// Reset scaling factor
-				if ((server->zoom_factor) == 1.0) {
-					keep_scaling_factor(server);
-					return;
-				}
-				else if ((server->zoom_factor - 0.7) < 1.0) {
-					// Set default zoom level, reset
-					server->zoom_factor = 1.0;
-					wlr_output_state_set_scale(&state, 1.0);
-					if (!wlr_output_commit_state(output, &state)) {
-						fprintf(stderr, "Zoom out: failed to commit output state\n");
-					}
-					keep_scaling_factor(server);
-					wlr_output_state_finish(&state);
-					// Reset position if zoom was off
-					wlr_scene_node_set_position(&pan_zoom_root->node, 0, 0);
-					return;
-				}
+	//------- Optimized Zooming logic -------//
+	double old_zoom = server->zoom_factor;
 
-				if (server->zoom_factor > 1.0) {
-					// Zoom out by reducing the factor slightly
-					server->zoom_factor = server->zoom_factor - ZoomFactor;
+	// 1. Get the physical output dimensions
+	int width, height;
+	wlr_output_effective_resolution(output, &width, &height);
 
-					wlr_output_state_set_scale(&state, server->zoom_factor);
-					if (!wlr_output_commit_state(output, &state)) {
-						fprintf(stderr, "Zoom out: failed to commit output state\n");
-					}
-					keep_scaling_factor(server);
-					wlr_output_state_finish(&state);
-					wlr_scene_node_set_position(&pan_zoom_root->node, 0, 0);
-					return;
+	if ((server->cursor->x < 10 && server->cursor->y < 10) || server->super_key_down) {
+		if (event->orientation != WL_POINTER_AXIS_VERTICAL_SCROLL) {
+			return;
+		}
+		// Calculate the New Zoom Factor
+		if (delta > 0) { // Scrolling Down (Zoom Out)
+			server->zoom_factor -= ZoomFactor;
+		}
+		else { // Scrolling Up (Zoom In)
+			server->zoom_factor += ZoomFactor;
+		}
+
+		// Sanity Checks & Clamping
+		if (server->zoom_factor > 10.0) server->zoom_factor = 10.0;
+		if (server->zoom_factor < 1.0)  server->zoom_factor = 1.0;
+
+		// Update Hardware Output State
+		struct wlr_output_state state;
+		wlr_output_state_init(&state);
+		wlr_output_state_set_scale(&state, server->zoom_factor);
+
+		if (!wlr_output_commit_state(output, &state)) {
+			server->touchpad_zooming = false;
+			fprintf(stderr, "Zoom: failed to commit output state\n");
+			wlr_output_state_finish(&state);
+			return;
+		}
+		wlr_output_state_finish(&state);
+
+		// Update Clients (The "Smart" Loop)
+		struct woodland_view *toplevel;
+		wl_list_for_each(toplevel, &server->toplevels, link) {
+			if (!toplevel->xdg_toplevel || !toplevel->xdg_toplevel->base->surface) {
+				continue; // Robustness: Skip invalid/unmapped views
+			}
+			if (toplevel->maximized) {
+				continue; // skip maximized windows
+			}
+
+			struct wlr_surface *surface = toplevel->xdg_toplevel->base->surface;
+			struct wlr_box geom;
+			wlr_xdg_surface_get_geometry(toplevel->xdg_toplevel->base, &geom);
+
+			if (server->zoom_factor == 1.0) {
+				// Reset Case
+				toplevel->lock_size = false;
+				server->touchpad_zooming = false;
+				wlr_fractional_scale_v1_notify_scale(surface, 1.0);
+				if (server->zoom_timer) {
+					wl_event_source_remove(server->zoom_timer);
+					server->zoom_timer = NULL;
 				}
 			}
 			else {
-				///fprintf(stderr, "Mouse wheel up\n");
-				// Zoom in by increasing zoom factor slightly
-				server->zoom_factor = server->zoom_factor + ZoomFactor;
-
-				if (server->zoom_factor > 10.0) {// Arbitrary upper limit
-					server->zoom_factor = 10.0;
+				// Zooming Case
+				if (!toplevel->lock_size) {
+					struct wlr_box geom;
+					wlr_xdg_surface_get_geometry(toplevel->xdg_toplevel->base, &geom);
+					toplevel->initial_width = geom.width;
+					toplevel->initial_height = geom.height;
+					toplevel->lock_size = true;
 				}
 
-				wlr_output_state_set_scale(&state, server->zoom_factor);
-				if (!wlr_output_commit_state(output, &state)) {
-					fprintf(stderr, "Zoom in: failed to commit output state\n");
+				// Keep MPV/Qt sizes sane
+				if (toplevel->initial_width >= geom.width) {
+					woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+													toplevel->initial_width,
+													toplevel->initial_height);
 				}
-				keep_scaling_factor(server);
-				wlr_output_state_finish(&state);
-				wlr_scene_node_set_position(&pan_zoom_root->node, 0, 0);
-				return;
+
+				// Notify apps of scale factor
+				if (!server->zoom_timer) {
+					server->zoom_timer = wl_event_loop_add_timer(server->event_loop,
+																finish_zoom_notify,
+																server);
+					wl_event_source_timer_update(server->zoom_timer, 200); // 200ms delay
+				}
+				wl_event_source_timer_update(server->zoom_timer, 200); // 200ms delay
 			}
-			break;
-		default:
-			keep_scaling_factor(server);
-			break;
 		}
+
+		// Finalize UI State
+		keep_scaling_factor(server);
+
+		// 2. Adjust Pan to keep the cursor as the focal point
+		// We use the ratio of the new zoom vs old zoom to shift the offset
+		double scale_change = server->zoom_factor / old_zoom;
+		server->pan_x = server->cursor->x - (server->cursor->x - server->pan_x) * scale_change;
+		server->pan_y = server->cursor->y - (server->cursor->y - server->pan_y) * scale_change;
+
+		// Calculate the total "slidable" distance
+		int w_deduct = (server->transformed_width * server->zoom_speed_m);
+		int w_calc = (server->transformed_width / round(w_deduct));
+		int h_deduct = 0;
+		int h_calc = 0;
+		// we need to adjust the height depending on whether we use mouse or touchpad
+		if (server->touchpad_zooming) { // if zooming with touchpad
+			h_deduct = (server->transformed_height * server->zoom_speed_m);
+			h_calc = (server->transformed_height / round(h_deduct)) - 5;
+		}
+		else { // if zooming with mouse
+			h_deduct = (server->transformed_height * server->zoom_speed);
+			h_calc = (server->transformed_height / round(h_deduct)) - 10;
+		}
+
+		// 3. Clamp based on the SCALED boundaries
+		double max_pan_x = ((output_box.width * server->zoom_factor) - output_box.width) - w_calc;
+		double max_pan_y = ((output_box.height * server->zoom_factor) - output_box.height) - h_calc;
+
+		// We clamp pan_x between -max_pan_x and 0 (since we move the scene LEFT)
+		if (server->pan_x < -max_pan_x) server->pan_x = -max_pan_x;
+		if (server->pan_x > 0) server->pan_x = 0;
+		if (server->pan_y < -max_pan_y) server->pan_y = -max_pan_y;
+		if (server->pan_y > 0) server->pan_y = 0;
+
+		// 4. Commit
+		wlr_scene_node_set_position(&pan_zoom_root->node, round(server->pan_x), round(server->pan_y));
+		return;
 	}
 	// Notify the client with pointer focus of the axis event.
 	wlr_seat_pointer_notify_axis(server->seat,
@@ -1818,8 +2282,20 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 		return;
 	}
 
+	// disable cursor click for any apps while panel is not hidden
+	if (server->disable_click || server->applauncher_opened) {
+		return;
+	}
+
 	// Notify seat about pointer button event
-	wlr_seat_pointer_notify_button(server->seat, event->time_msec, event->button, event->state);
+	// before notifying the clients about the button click
+	// we need to check if the cursor is hovering over either
+	// the bottom left corner (menu) or top right corner (windowlist)
+	// if cursor is currently hovering over those hot corners
+	// then we should disable clicks for the clients
+	if (!server->disable_toplevel_focus) {
+		wlr_seat_pointer_notify_button(server->seat, event->time_msec, event->button, event->state);
+	}
 
 	// Check if button was released
 	if (event->state == WL_POINTER_BUTTON_STATE_RELEASED) {
@@ -1845,90 +2321,127 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 		wlr_seat_pointer_notify_clear_focus(server->seat);
 	}
 
-	// Check if toplevel was found
-	if (toplevel) {
-		// Focus and activate toplevel
-		focus_toplevel(toplevel);
-		// If the Super key and left mouse button are both pressed, emit a move request
-		if (event->button == BTN_LEFT && server->super_key_down) {
-			wl_signal_emit(&toplevel->xdg_toplevel->events.request_move, toplevel->xdg_surface);
-		}
-		else {
-			server->super_key_down = false;
-		}
-	}
-	else {
-		// Handle case when no toplevel is found
-		fprintf(stderr, "Warning: No toplevel found at cursor position\n");
-	}
 	// Open the calendar
 	if (event->button == BTN_LEFT && server->time_hovered && server->time_is_clicked) {
 		///fprintf(stderr, "Closing calendar\n");
 		server->time_is_clicked = false;
+
+		// hide apptel
+		if (server->calendar_buffer) {
+			wlr_scene_node_set_enabled(&server->calendar_buffer->node, false);
+		}
 	}
 	else if (event->button == BTN_LEFT && server->time_hovered && !server->time_is_clicked) {
 		///fprintf(stderr, "Opening calendar\n");
 		server->time_is_clicked = true;
 		server->calendar_texture = true;
 	}
+
 	// Open the network applet
-	if (event->button == BTN_LEFT &&
-		server->network_hovered &&
-		server->network_is_clicked &&
-		!server->network_ly_hovered) {
-		///fprintf(stderr, "Closing network applet\n");
-		server->network_is_clicked = false;
-		server->network_ly_hovered = false;
-		server->network_password_prompt = false;
+	if (event->button == BTN_LEFT && server->network_hovered) {
+		// TOGGLE LOGIC: If it's open, close it. If it's closed, open it.
+		if (server->network_is_clicked) { // closing network appler
+			// fprintf(stderr, "Closing network applet via icon click\n");
+			clean_ssids(server);
+			if (server->check_pssed_timer) {
+				wl_event_source_remove(server->check_pssed_timer);
+				server->check_pssed_timer = NULL;
+			}
+			server->network_hovered = false;
+			server->network_is_clicked = false;
+			server->network_ly_hovered = false;
+			server->network_was_activated = false;
+			server->network_password_prompt = false;
+			server->network_applet_was_activated = false;
+
+			// hide apptel
+			if (server->network_buffer) {
+				wlr_scene_node_set_enabled(&server->network_buffer->node, false);
+			}
+			return;
+		}
+		else { // opening network appler
+			// fprintf(stderr, "Opening network applet via icon click\n");
+			clean_ssids(server);
+			server->network_is_clicked = true;
+			server->network_texture = true;
+			return;
+		}
 	}
-	else if (event->button == BTN_LEFT && server->network_hovered && !server->network_is_clicked) {
-		///fprintf(stderr, "Opening network applet\n");
-		server->network_is_clicked = true;
-		server->network_texture = true;
-	}
+
 	// Clicking on a wifi network SSID name
 	if (event->button == BTN_LEFT &&
+		server->ssids[1] != NULL &&
 		server->number_of_ssids > 0 &&
 		server->ssids[server->SsidPosition] != NULL) {
 
 		///fprintf(stderr, "Selected SSID: %s\n", server->ssids[server->SsidPosition]);
 		if (strcmp(server->ssids[1], "____________________________________________") != 0 &&
 					check_if_secured_ssid(server->ssids[server->SsidPosition])) {
-
-			server->ssids[0] = strdup(server->ssids[server->SsidPosition]);
+			// Save the specific SSID name into a temporary local variable
+			char *selected_ssid = strdup(server->ssids[server->SsidPosition]);
+			server->ssids[0] = selected_ssid;
 			server->ssids[1] = strdup("____________________________________________");
 			server->ssids[2] = strdup("Please enter password");
 			server->ssids[3] = strdup("|");
 			server->ssids[4] = strdup("Connect");
 			server->ssids[5] = strdup("Cancel");
 			server->network_password_prompt = true;
+			return;
 		}
 		else if (strcmp(server->ssids[1], "____________________________________________") != 0 &&
 						!check_if_secured_ssid(server->ssids[server->SsidPosition])) {
 			///fprintf(stderr, "SSID: %s is free\n", server->ssids[server->SsidPosition]);
-
 			// Connecting to a free open wifi network
 			connect_to_open_ssid(server->ssids[server->SsidPosition]);
 			refresh_networks(server);
+			return;
 		}
 		else if (strcmp(server->ssids[1], "____________________________________________") == 0) {
 			///fprintf(stderr, "Enter password and connect or cancel\n");
 			///fprintf(stderr, "Button clicked: %s\n", server->ssids[server->SsidPosition]);
 			if (strcmp(server->ssids[server->SsidPosition], "Connect") == 0) {
-				///fprintf(stderr, "Connecting to: %s with password %s\n", server->ssids[0],
-				///														server->ssids[3]);
-				
-				// Connecting to SSID
+				// Connecting to password protected SSID
 				server->buff[0] = '\0';
-				connect_to_secured_ssid(server->ssids[0], server->ssids[3]);
 
-				// Refreshing the list of available wifi networks
-				refresh_networks(server);
+				// copying SSID name to the second position
+				if (server->ssids[1] != NULL) {
+					free(server->ssids[1]);
+					server->ssids[1] = NULL;
+				}
+				if (server->ssids[0] == NULL) {
+					server->ssids[0] = strdup("Unknown error");
+				}
+				
+				server->ssids[1] = strdup(server->ssids[0]);
+				free(server->ssids[0]);
+				server->ssids[0] = NULL;
+
+				// replaceing the text for the first position
+				server->ssids[0] = strdup("Freezing for 10s checking password for:");
+
+				for (size_t i = 0; i < 6; i++) {
+					if (i == 0 || i == 1 || i == 3) {
+						continue;
+					}
+					free(server->ssids[i]);
+					server->ssids[i] = NULL;
+				}
+
+				if (!server->check_pssed_timer) {
+					server->check_pssed_timer = wl_event_loop_add_timer(server->event_loop,
+																		check_passwd,
+																		server);
+				}
+				wl_event_source_timer_update(server->check_pssed_timer, 3000);
+				return;
 			}
 			else if (strcmp(server->ssids[server->SsidPosition], "Cancel") == 0) {
 				///fprintf(stderr, "Cancelled\n");
 				server->buff[0] = '\0';
+				server->network_password_prompt = false;
 				refresh_networks(server);
+				return;
 			}
 		}
 	}
@@ -1936,50 +2449,50 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 	struct wlr_box output_box;
 	wlr_output_layout_get_box(server->output_layout, NULL, &output_box);
 
+	// clicking the windowlist button to open
 	if (event->button == BTN_LEFT &&
 		!server->titles_clicked &&
 		(int)server->cursor->x > (output_box.width - server->wl_active_area_x) &&
 		(int)server->cursor->y < server->wl_active_area_y) {
-
 		// Opening window list dialog windowlist
 		///fprintf(stderr, "Windowlist clicked.\n");
 		// Window list
 		server->titles_clicked = true;
 		list_titles(server);
 	}
-	else if (event->button == BTN_LEFT && server->titles_clicked && server->titles_ly_hovered &&
-					strcmp(server->toplevel_info.app_id[server->TitlesPosition], "nil(NULL)") != 0) {
-		// Closing window list dialog
-		///fprintf(stderr, "toplevel_info->titles[%d] = %s\n",
-		///		server->TitlesPosition,
-		///		server->toplevel_info.titles[server->TitlesPosition]);
-		server->titles_clicked = false;
-		///server->titles_ly_hovered = false;
-		struct woodland_view *iter = NULL;
-		struct woodland_view *found_toplevel = NULL;
-		if (!wl_list_empty(&server->toplevels)) {
-			wl_list_for_each(iter, &server->toplevels, link) {
-				if (iter &&
-					iter->xdg_toplevel->app_id &&
-					server->toplevel_info.app_id[server->TitlesPosition] &&
-					strcmp(iter->xdg_toplevel->app_id,
-					server->toplevel_info.app_id[server->TitlesPosition]) == 0) {
-					found_toplevel = iter;
-					///fprintf(stderr, "iter->xdg_toplevel->app_id: %s\n", iter->xdg_toplevel->app_id);
-					///fprintf(stderr, "server->toplevel_info.app_id[server->TitlesPosition]: %s\n",
-					///		server->toplevel_info.app_id[server->TitlesPosition]);
-				}
+	else if (event->button == BTN_LEFT && server->titles_clicked && server->titles_ly_hovered) {
+		// Get the exact view directly via the index
+		struct woodland_view *found_toplevel = server->toplevel_info.views[server->TitlesPosition];
+
+		// clicking an item in the windowlist menu to activate
+		if (found_toplevel) {
+			if (!server->disable_toplevel_focus) {
+				found_toplevel->minimized = false;
+				wlr_scene_node_set_enabled(&found_toplevel->scene_tree->node, true);
+				wlr_scene_node_raise_to_top(&found_toplevel->scene_tree->node);
+				focus_toplevel(found_toplevel);
 			}
 		}
-		// Reset minimized flag to allow it to minimize again after unminimizing
-		found_toplevel->minimized = false;
-		wlr_scene_node_set_enabled(&found_toplevel->scene_tree->node, true);
-		wlr_scene_node_raise_to_top(&found_toplevel->scene_tree->node);
-		focus_toplevel(found_toplevel);
-
+		// closing windowlist popup
 		if (server->titles_scene_buffer) {
 			wlr_scene_node_destroy(&server->titles_scene_buffer->node);
 			server->titles_scene_buffer = NULL;
+			server->titles_clicked = false;
+			server->titles_ly_hovered = false;
+
+			for (int i = 0; i < 256; i++) {
+				// Only free things you allocated with strdup()
+				if (server->toplevel_info.icon_paths[i] != NULL) {
+					free(server->toplevel_info.icon_paths[i]);
+					server->toplevel_info.icon_paths[i] = NULL;
+				}
+
+				// Simply set pointers to NULL. 
+				server->toplevel_info.app_id[i] = NULL;
+				server->toplevel_info.titles[i] = NULL;
+				server->toplevel_info.views[i] = NULL;
+				server->toplevel_info.minimized[i] = false;
+			}
 		}
 	}
 	else if (event->button == BTN_LEFT && server->titles_clicked && !server->titles_ly_hovered) {
@@ -1990,7 +2503,19 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 		server->titles_clicked = false;
 		///fprintf(stderr, "Windowlist closed\n");
 	}
+	else if (server->titles_clicked) {
+		// closing the windowlist dialog like a popup
+		if (server->titles_scene_buffer) {
+			wlr_scene_node_destroy(&server->titles_scene_buffer->node);
+			server->titles_scene_buffer = NULL;
+		}
+		server->titles_clicked = false;
 
+		// prevent clicking toplevels behind menus
+		// also activating the menu items without affecting
+		// other toplevels
+		server->disable_toplevel_focus = false;
+	}
 	// Menu clicked
 	if (event->button == BTN_LEFT &&
 		!server->menu_clicked &&
@@ -2047,7 +2572,7 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 		///fprintf(stderr, "Menu closed\n");
 	}
 	// Switching off display
-	else if (event->button == BTN_RIGHT && server->brightness_change && !server->display_is_off) {
+	if (event->button == BTN_RIGHT && server->brightness_change && !server->display_is_off) {
 		///fprintf(stderr, "Switching off display.\n");
 		struct woodland_output *output;
 		wl_list_for_each(output, &server->outputs, link) {
@@ -2061,6 +2586,38 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 			wlr_output_schedule_frame(output->wlr_output);
 		}
 		server->display_is_off = true;
+	}
+	// we need to move the regular toplevel activation here
+	// because the interraction with menus should come first
+	// and should not affect the regular toplevels so whenever
+	// you open/close/item click in the menus (windowlist, menu, panel)
+	// it should not also click/activate the regular toplevel behind the menus..
+	
+	if (server->disable_toplevel_focus) {
+		return;
+	}
+
+	// Check if toplevel was found
+	if (toplevel && !server->disable_toplevel_focus) {
+		// sets the flag that this newly created toplevel has received its first click
+		// this is needed to fix the weird behavior of some apps to maximize themselves
+		// automatically without user consent
+		toplevel->was_already_clicked = true;
+
+		// Focus and activate toplevel
+		focus_toplevel(toplevel);
+		// If the Super key and left mouse button are both pressed, emit a move request
+		if (event->button == BTN_LEFT && server->super_key_down) {
+			wl_signal_emit(&toplevel->xdg_toplevel->events.request_move, toplevel->xdg_surface);
+		}
+		else {
+			server->super_key_down = false;
+		}
+		server->disable_toplevel_focus = false;
+	}
+	else {
+		// Handle case when no toplevel is found
+		fprintf(stderr, "Warning: No toplevel found at cursor position\n");
 	}
 }
 
@@ -2083,15 +2640,16 @@ static void server_cursor_frame(struct wl_listener *listener, void *data) {
 static void output_frame(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct woodland_output *output = wl_container_of(listener, output, frame);
-	struct wlr_scene *scene = output->server->scene;
-	struct wlr_scene_output *scene_output = wlr_scene_get_scene_output(scene, output->wlr_output);
 
-	// Render the scene if needed and commit the output.
-	wlr_scene_output_commit(scene_output, NULL);;
+	if (!output->scene_output) {
+		return;
+	}
+
+	wlr_scene_output_commit(output->scene_output, NULL);
 
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
-	wlr_scene_output_send_frame_done(scene_output, &now);
+	wlr_scene_output_send_frame_done(output->scene_output, &now);
 }
 
 static void output_destroy(struct wl_listener *listener, void *data) {
@@ -2151,9 +2709,6 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 	float bg_color[4] = { 0.2, 0.2, 0.2, 1.0 }; // dark gray background
 	wlr_scene_rect_create(&scene->tree, wlr_output->width, wlr_output->height, bg_color);
 
-	/* Atomically applies the new output state. */
-	wlr_output_commit_state(wlr_output, &state);
-	wlr_output_state_finish(&state);
 	/* Allocates and configures our state for this output */
 	struct woodland_output *output = calloc(1, sizeof(struct woodland_output));
 	if (output == NULL) {
@@ -2191,6 +2746,10 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 	output->scene_output = wlr_scene_output_create(server->scene, wlr_output);
 	wlr_scene_output_layout_add_output(server->scene_layout, l_output, output->scene_output);
 
+	/* Atomically applies the new output state. */
+	wlr_output_commit_state(wlr_output, &state);
+	wlr_output_state_finish(&state);
+
 	// updated the output layout connection:
 	uint32_t caps = WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD;
 	wlr_seat_set_capabilities(server->seat, caps);
@@ -2203,6 +2762,10 @@ static void begin_interactive(struct woodland_view *toplevel,
 	 * compositor stops propegating pointer events to clients and instead
 	 * consumes them itself, to move or resize windows. */
 	struct woodland_server *server = toplevel->server;
+	if (!server) {
+		wlr_log(WLR_ERROR, "Server is NULL in 'begin_interactive'!");
+		return;
+	}
 
 	server->grabbed_toplevel = toplevel;
 	server->cursor_mode = mode;
@@ -2244,154 +2807,160 @@ static void normalize_resize_edges(struct woodland_server *server) {
 /**
  ******************* XDG Toplevel, Foreign toplevel and Popups management *******************
  */
-/* Get user defined window placement coordinates from wooldand.ini config */
-static void get_window_placement(char *file, char *ids[], char *identifiers[], int x[], int y[]) {
-	FILE *fp = fopen(file, "r");
-	if (fp == NULL) {
-		wlr_log(WLR_ERROR, "Could not open file %s", file);
-		return;
+/* Function to trim spaces and other whitespace characters from the start and end of a string */
+static char *trim(char *s) {
+	while (isspace((unsigned char)*s)) {
+		s++;
 	}
+
+	if (*s == '\0') {
+		return s;
+	}
+
+	char *end = s + strlen(s) - 1;
+
+	while (end > s && isspace((unsigned char)*end)) {
+		end--;
+	}
+
+	end[1] = '\0';
+
+	return s;
+}
+
+static struct window_rules *parse_window_rules(const char *file) {
+	FILE *fp = fopen(file, "r");
+	if (!fp) {
+		wlr_log(WLR_ERROR, "Could not open config: %s", file);
+		return NULL;
+	}
+
+	struct window_rules *wr = calloc(1, sizeof(*wr));
+
+	size_t capacity = 16;
+	wr->rules = calloc(capacity, sizeof(struct window_rule));
+
 	char line[1024];
-	int count = 0;
-	while (fgets(line, sizeof(line), fp) && count < 1024) {
-		// Ignore comments
-		if (line[0] == '#') {
+	while (fgets(line, sizeof(line), fp)) {
+		line[strcspn(line, "\n")] = '\0';
+		char *l = trim(line);
+		if (*l == '#' || *l == '\0') {
 			continue;
 		}
-		// Look for lines that start with 'window_place'
-		if (strncmp(line, "window_place", 12) == 0) {
-			// Find the '=' sign
-			char *equal_sign = strchr(line, '=');
-			if (equal_sign == NULL) {
-				continue;
-			}
-			// Skip past '=' and any spaces
-			char *data = equal_sign + 1;
-			while (isspace(*data)) {
-				data++;
-			}
-			// Parse the id ('app_id:' or 'title:')
-			char *id_start = data;
-			while (*data && !isspace(*data)) {
-				data++;
-			}
-			*data = '\0';
-			ids[count] = strdup(id_start);
-			data++;
-			// Skip spaces
-			while (isspace(*data)) {
-				data++;
-			}
-			// Parse the identifier (enclosed in double quotes if present)
-			char *identifier_start;
-			char *identifier_end;
-			if (*data == '"') {
-				identifier_start = data + 1;
-				identifier_end = strchr(identifier_start, '"');
-				if (identifier_end == NULL) {
-					free(ids[count]);
-					continue;
-				}
-			}
-			else {
-				identifier_start = data;
-				identifier_end = data;
-				while (*identifier_end && !isspace(*identifier_end)) {
-					identifier_end++;
-				}
-			}
-			*identifier_end = '\0';
-			identifiers[count] = strdup(identifier_start);
-			data = identifier_end + 1;
-			// Skip spaces
-			while (isspace(*data)) {
-				data++;
-			}
-			// Parse the x and y coordinates
-			char *x_str = data;
-			while (*data && !isspace(*data)) {
-				data++;
-			}
-			*data = '\0';
-			char *y_str = data + 1;
-			while (*data && !isspace(*data)) {
-				data++;
-			}
-			*data = '\0';
-			if (x_str == NULL || y_str == NULL) {
-				free(ids[count]);
-				free(identifiers[count]);
-				continue;
-			}
-			x[count] = atoi(x_str);
-			y[count] = atoi(y_str);
-			count++;
+
+		if (strncmp(l, "window_place", 12) != 0) {
+			continue;
 		}
+
+		char *eq = strchr(l, '=');
+		if (!eq) {
+			continue;
+		}
+
+		char *data = trim(eq + 1);
+		char *id = strtok(data, " \t");
+		char *identifier = strtok(NULL, " \t");
+
+		if (!id || !identifier) {
+			continue;
+		}
+
+		char *x_str;
+		char *y_str;
+
+		/* quoted identifier */
+		if (identifier[0] == '"') {
+			identifier++;
+			char *end = strchr(identifier, '"');
+			if (!end) {
+				continue;
+			}
+
+			*end = '\0';
+			char *after = trim(end + 1);
+			x_str = strtok(after, " \t");
+			y_str = strtok(NULL, " \t");
+		}
+		else {
+			x_str = strtok(NULL, " \t");
+			y_str = strtok(NULL, " \t");
+		}
+
+		if (!x_str || !y_str) {
+			continue;
+		}
+
+		if (wr->count >= capacity) {
+			capacity *= 2;
+			wr->rules = realloc(wr->rules, capacity * sizeof(struct window_rule));
+		}
+
+		struct window_rule *r = &wr->rules[wr->count++];
+		r->id = strdup(id);
+		r->identifier = strdup(identifier);
+		r->x = atoi(x_str);
+		r->y = atoi(y_str);
 	}
 	fclose(fp);
+	return wr;
 }
 
 /**
- * Handle activation of a foreign toplevel.
- *
- * @param listener The listener that triggered this function.
- * @param data The event data.
+ * Handle activation of a foreign toplevel
  */
 static void handle_activate(struct wl_listener *listener, void *data) {
-	// Get the event and toplevel from the listener and data
 	struct wlr_foreign_toplevel_handle_v1_activated_event *event = data;
-	if (!event) {
-		wlr_log(WLR_ERROR, "Activation failed: Missing event data");
-		return;
-	}
-
 	struct woodland_view *toplevel = wl_container_of(listener, toplevel, request_activate);
-	if (!toplevel) {
-		wlr_log(WLR_ERROR, "Activation failed: Missing toplevel");
+
+	if (!event || !toplevel || !event->toplevel) {
+		wlr_log(WLR_ERROR, "Activation failed: Invalid data");
 		return;
 	}
 
-	// Check if the event's toplevel is valid
-	if (!event->toplevel) {
-		wlr_log(WLR_ERROR, "Activation failed: Invalid foreign handle");
-		return;
-	}
-
-	// Check if the toplevel's foreign handle matches the event's toplevel
+	// Fix handle mismatch
 	if (toplevel->foreign_handle != event->toplevel) {
-		wlr_log(WLR_ERROR, "Handle mismatch: %p (expected) vs %p (actual)", toplevel->foreign_handle,
-																			event->toplevel);
-		// Find the correct toplevel based on the event's toplevel
-		struct woodland_view *correct_toplevel = NULL;
-		struct woodland_view *tmp_toplevel;
-		wl_list_for_each(tmp_toplevel, &toplevel->server->toplevels, link) {
-			if (tmp_toplevel->foreign_handle == event->toplevel) {
-				correct_toplevel = tmp_toplevel;
+		struct woodland_view *tmp;
+		bool found = false;
+		wl_list_for_each(tmp, &toplevel->server->toplevels, link) {
+			if (tmp->foreign_handle == event->toplevel) {
+				toplevel = tmp;
+				found = true;
 				break;
 			}
 		}
-		// If no matching toplevel is found, log an error and return
-		if (!correct_toplevel) {
-			wlr_log(WLR_ERROR, "Failed to find toplevel for handle %p", event->toplevel);
-			return;
-		}
-		// Update the toplevel to the correct one
-		toplevel = correct_toplevel;
+		if (!found) return;
 	}
 
-	// Focus the window and bring it to front
+	struct woodland_server *server = toplevel->server;
+
+	// Clear the seat state to prevent the "input freeze"
+	// This breaks any implicit grabs held by the previous window
+	wlr_seat_keyboard_notify_clear_focus(server->seat);
+	wlr_seat_pointer_notify_clear_focus(server->seat);
+
+	// De-activate all other windows
+	// Wayland protocol generally expects only one surface to be 'activated' at a time
+	struct woodland_view *v;
+	wl_list_for_each(v, &server->toplevels, link) {
+		if (v != toplevel) {
+			if (v->foreign_handle) {
+				wlr_foreign_toplevel_handle_v1_set_activated(v->foreign_handle, false);
+			}
+			if (v->xdg_toplevel) {
+				wlr_xdg_toplevel_set_activated(v->xdg_toplevel, false);
+			}
+		}
+	}
+
+	// Focus the requested window
 	focus_toplevel(toplevel);
 
-	// Update foreign handle state
+	// Update protocol states for the new window
 	wlr_foreign_toplevel_handle_v1_set_activated(event->toplevel, true);
-
 	if (toplevel->xdg_toplevel) {
 		wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, true);
 	}
-	else {
-		wlr_log(WLR_ERROR, "Missing XDG toplevel for handle %p", event->toplevel);
-	}
-	wlr_log(WLR_ERROR, "Successfully activated XDG toplevel");
+	wlr_log(WLR_INFO, "Successfully activated window via foreign-toplevel");
 }
 
 static void handle_close(struct wl_listener *listener, void *data) {
@@ -2409,15 +2978,41 @@ static void xdg_toplevel_request_maximize(struct wl_listener *listener, void *da
 	struct woodland_view *toplevel = wl_container_of(listener, toplevel, request_maximize);
 	struct woodland_server *server = toplevel->server;
 
-	if (!toplevel->xdg_toplevel->base->initialized) {
+	// we check for '!toplevel->mapped' because some apps tend to 
+	// go maximized on startup even before getting mapped
+	if (!toplevel->xdg_toplevel->base->initialized || !toplevel->mapped) {
 		return;
 	}
 
-	// Toggle maximize state
-	bool maximized = !toplevel->maximized;
-	toplevel->maximized = maximized;
+	// this is insane what you have to do in order to stop GTK
+	// from messing up your apps geomenty and position
+	// we have to check if the cursor is currently in a grab mode
+	// then we have to check if the client requested to be maximized
+	// on its own without user interacction because some apps tend to go
+	// maximized as soon as they start, others while you simply try to grab
+	// and move them around
+	if (((!toplevel->xdg_toplevel->requested.maximized && !toplevel->maximized) && 
+		(!toplevel->xdg_toplevel->requested.maximized && server->cursor_mode != WOODLAND_CURSOR_MOVE)) 
+		|| 
+		((!toplevel->xdg_toplevel->requested.maximized && !toplevel->maximized) && 
+		(!toplevel->xdg_toplevel->requested.maximized && server->cursor_mode != WOODLAND_CURSOR_RESIZE))) {
+		return;
+	}
 
-	if (maximized) {
+	// this is another guard against the GTK non-sense, there is a weird issue with Audacity
+	// it tends to open maximized on first launch and if you somehow deal with that then
+	// it's still not done fighting with you, if you already have a normally started instance
+	// of Audacity, then if you try to launch the second instance, it still requestes
+	// to be maximized, so this flag is telling us whether the user has made at least a single
+	// click inside the newly launched app, and if the user didn't do any interaction with it,
+	// it means the toplevel itself decided that it wants to maximize, so just ignore its wishes
+	if (!toplevel->was_already_clicked) {
+		return;
+	}
+
+	// toggle maximized state on/off depending on client request
+	if (!toplevel->maximized) {
+		toplevel->maximized = true;
 		// Save current geometry (position and size)
 		toplevel->saved_geometry.x = toplevel->scene_tree->node.x;
 		toplevel->saved_geometry.y = toplevel->scene_tree->node.y;
@@ -2428,44 +3023,35 @@ static void xdg_toplevel_request_maximize(struct wl_listener *listener, void *da
 		wlr_xdg_toplevel_set_maximized(toplevel->xdg_toplevel, true);
 		
 		// Set new size to the maximum size, the size of the whole output/screen
-		// For simplicity, i use the same dimensions as fullscreen here.
-		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+		woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel,
 								server->transformed_width,
 								server->transformed_height);
 		
 		// Set position to the top-left of the screen
-		wlr_scene_node_set_position(&toplevel->scene_tree->node, 0, 0);
+		woodland_scene_node_set_position(toplevel, 0, 0);
 	}
 	else {
+		toplevel->maximized = false;
 		// Restore original state
 		wlr_xdg_toplevel_set_maximized(toplevel->xdg_toplevel, false);
-		
+
 		// Restore original size
-		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+		woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel,
 								toplevel->saved_geometry.width,
 								toplevel->saved_geometry.height);
 		
 		// Restore original position
-		wlr_scene_node_set_position(&toplevel->scene_tree->node,
+		woodland_scene_node_set_position(toplevel,
 									toplevel->saved_geometry.x,
 									toplevel->saved_geometry.y);
 	}
 
 
 	// Set the toplevel as resizing as a workaround for scale modifying the size of some toplevels
-	wlr_xdg_toplevel_set_resizing(toplevel->xdg_toplevel, true);
+	keep_scaling_factor(toplevel->server);
 
 	// Send configure event immediately
 	wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
-
-	// Force immediate redraw
-	struct woodland_output *output;
-	wl_list_for_each(output, &server->outputs, link) {
-		wlr_scene_output_commit(output->scene_output, NULL);
-		struct timespec now;
-		clock_gettime(CLOCK_MONOTONIC, &now);
-		wlr_scene_output_send_frame_done(output->scene_output, &now);
-	}
 }
 
 static void xdg_toplevel_request_fullscreen(struct wl_listener *listener, void *data) {
@@ -2473,15 +3059,40 @@ static void xdg_toplevel_request_fullscreen(struct wl_listener *listener, void *
 	struct woodland_view *toplevel = wl_container_of(listener, toplevel, request_fullscreen);
 	struct woodland_server *server = toplevel->server;
 
-	if (!toplevel->xdg_toplevel->base->initialized) {
+	// we check for '!toplevel->mapped' because some apps tend to 
+	// go fullscreen on startup even before getting mapped
+	if (!toplevel->xdg_toplevel->base->initialized || !toplevel->mapped) {
 		return;
 	}
 
-	// Toggle fullscreen state
-	bool fullscreen = !toplevel->fullscreened;
-	toplevel->fullscreened = fullscreen;
+	// this is insane what you have to do in order to stop GTK
+	// from messing up your apps geomenty and position
+	// we have check if the cursor is currently in a grab mode
+	// then we have to check if the client requested to be fullscreened
+	// on its own without user interacction because some apps tend to go
+	// fullscreen as soon as they start, others while you simply try to grab
+	// and move them around
+	if (((!toplevel->xdg_toplevel->requested.fullscreen && !toplevel->fullscreen) && 
+		(!toplevel->xdg_toplevel->requested.fullscreen && server->cursor_mode != WOODLAND_CURSOR_MOVE)) 
+		|| 
+		((!toplevel->xdg_toplevel->requested.fullscreen && !toplevel->fullscreen) && 
+		(!toplevel->xdg_toplevel->requested.fullscreen && server->cursor_mode != WOODLAND_CURSOR_RESIZE))) {
+		return;
+	}
 
-	if (fullscreen) {
+	// this is another guard against the GTK non-sense, there is a weird issue with Audacity
+	// it tends to open maximized on first launch and if you somehow deal with that then
+	// it's still not done fighting with you, if you already have a normally started instance
+	// of Audacity, then if you try to launch the second instance, it still requestes
+	// to be maximized, so this flag is telling us whether the user has made at least a single
+	// click inside the newly launched app, and if the user didn't do any interaction with it,
+	// it means the toplevel itself decided that it wants to maximize, so just ignore its wishes
+	if (!toplevel->was_already_clicked) {
+		return;
+	}
+	// toggle fullscreen state on/off depending on client request
+	if (!toplevel->fullscreen) {
+		toplevel->fullscreen = true;
 		// Save current geometry
 		toplevel->saved_geometry.x = toplevel->scene_tree->node.x;
 		toplevel->saved_geometry.y = toplevel->scene_tree->node.y;
@@ -2490,18 +3101,19 @@ static void xdg_toplevel_request_fullscreen(struct wl_listener *listener, void *
 
 		// Set fullscreen state and new size
 		wlr_xdg_toplevel_set_fullscreen(toplevel->xdg_toplevel, true);
-		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+		woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel,
 								server->transformed_width,
 								server->transformed_height);
-		wlr_scene_node_set_position(&toplevel->scene_tree->node, 0, 0);
+		woodland_scene_node_set_position(toplevel, 0, 0);
 	}
 	else {
 		// Restore original state
+		toplevel->fullscreen = false;
 		wlr_xdg_toplevel_set_fullscreen(toplevel->xdg_toplevel, false);
-		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+		woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel,
 								toplevel->saved_geometry.width,
 								toplevel->saved_geometry.height);
-		wlr_scene_node_set_position(&toplevel->scene_tree->node,
+		woodland_scene_node_set_position(toplevel,
 									toplevel->saved_geometry.x,
 									toplevel->saved_geometry.y);
 	}
@@ -2509,14 +3121,6 @@ static void xdg_toplevel_request_fullscreen(struct wl_listener *listener, void *
 	// Send configure event immediately
 	wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
 
-	// Force immediate redraw
-	struct woodland_output *output;
-	wl_list_for_each(output, &server->outputs, link) {
-		wlr_scene_output_commit(output->scene_output, NULL);
-		struct timespec now;
-		clock_gettime(CLOCK_MONOTONIC, &now);
-		wlr_scene_output_send_frame_done(output->scene_output, &now);
-	}
 }
 
 static void xdg_toplevel_request_minimize(struct wl_listener *listener, void *data) {
@@ -2543,7 +3147,6 @@ static void xdg_toplevel_request_resize(struct wl_listener *listener, void *data
 	struct woodland_view *toplevel = wl_container_of(listener, toplevel, request_resize);
 
 	if (toplevel) {
-		// newly added
 		toplevel->resized = true;
 		toplevel->server->resize_edges = event->edges;
 		normalize_resize_edges(toplevel->server);
@@ -2591,6 +3194,60 @@ static void handle_toplevel_set_app_id(struct wl_listener *listener, void *data)
 	}
 }
 
+static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
+	(void)data;
+	struct woodland_view *toplevel = wl_container_of(listener, toplevel, commit);
+	if (toplevel->commit_now) {
+		wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
+		toplevel->commit_now = false;
+	}
+	if (toplevel->xdg_toplevel->base->initial_commit) {
+		if (file_exists(toplevel->server->config_sizes)) {
+			// When an xdg_surface performs an initial commit, the compositor must
+			// reply with a configure so the client can map the surface. Woodland
+			// configures the first time opened xdg_toplevel with 0,0 size to let
+			// the client pick the dimensions itself or if the toplevel has been
+			// previously opened then it applies the last time saved width and height.
+
+			// Determine if this is a window we actually want to force a size on.
+			// Typically, we only want to "restore" size for toplevel parents.
+			// If it has a parent, it's a dialog/popup and should choose its own size
+			if (toplevel->xdg_toplevel->parent != NULL) {
+				woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel, 0, 0);
+			}
+			else {
+				// It is a toplevel window. Now check for cached config
+				char app_id_width[128];
+				char app_id_height[128];
+				snprintf(app_id_width, sizeof(app_id_width), "%s_width", toplevel->app_id);
+				snprintf(app_id_height, sizeof(app_id_height), "%s_height", toplevel->app_id);
+
+				int LastToplevelWidth = get_int_value_from_conf(toplevel->server->config_sizes,
+																app_id_width);
+				int LastToplevelHeight = get_int_value_from_conf(toplevel->server->config_sizes,
+																app_id_height);
+
+				// If the toplevel is firt time opened then it has no records in 'windows_sizes.db
+				// and 'get_int_value_from_conf' will not find its app_id and will return 1
+				// wrongly applying width = 1 and height = 1, that's why we need to set all
+				// the initial first time opened toplevels width and height to 0. Setting it
+				// to 0 let's the toplevels apply their own size.
+				// Normalize 1 or 0 to "unset" (0,0)
+				if (LastToplevelWidth <= 1 || LastToplevelHeight <= 1) {
+					woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel, 0, 0);
+				}
+				else {
+					woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+													LastToplevelWidth,
+													LastToplevelHeight);
+				}
+			}
+		}
+		wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
+		toplevel->commit_now = false;
+	}
+}
+
 /**
  * Handles the XDG toplevel map event.
  * 
@@ -2615,6 +3272,12 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 
 	// Insert the toplevel into the list of managed windows
 	wl_list_insert(&server->toplevels, &toplevel->link);
+	// we need the second list 'server->toplevels_updated' to
+	// keep it updated and separete from the 'server->toplevels'
+	// because we use 'server->toplevels' for cycling through
+	// the windows and 'server->toplevels_updated' is used to
+	// give focus to the correct windows underneath the closed one
+	wl_list_insert(&server->toplevels_updated, &toplevel->updated_link);
 
 	// Create Foreign Toplevel Handle (Only if Foreign Toplevel Management is active)
 	if (server->toplevel_manager) {
@@ -2624,6 +3287,7 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 			wlr_log(WLR_ERROR, "Failed to create foreign toplevel handle");
 			// Remove the toplevel from the list of managed windows
 			WL_LIST_SAFE_REMOVE(&toplevel->link);
+			WL_LIST_SAFE_REMOVE(&toplevel->updated_link);
 			return;
 		}
 
@@ -2652,176 +3316,6 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 		if (toplevel->foreign_handle) {
 			wlr_foreign_toplevel_handle_v1_output_enter(toplevel->foreign_handle, output);
 		}
-
-		// Default placement
-		// Get the output's layout
-		struct wlr_box output_box;
-		wlr_output_layout_get_box(server->output_layout, NULL, &output_box);
-
-		// Get the transformed resolution of the output
-		///int width = output_box.width;
-		///int height = output_box.height;
-
-		// Get only transformed resolution because when scaling is applied
-		// all newly opened applications are being resized
-		int width = server->transformed_width;
-		int height = server->transformed_height;
-
-		// Calculate the position to center the window
-		struct wlr_box *geo = &toplevel->xdg_toplevel->base->current.geometry;
-		int window_width = geo->width;
-		int window_height = geo->height;
-
-		double x = 0;
-		double y = 0;
-		if (window_width == 0 || window_height == 0) {
-			// Use a default size for windows with width = 0 and height = 0 geometry
-			window_width = 700; // Magic number to place the window right in the center
-			window_height = 300;
-			x = output_box.x + (width / 2.0) - (window_width / 2.0);
-			y = output_box.y + (height / 2.0) - (window_height / 2.0);
-		}
-		else {
-			// Default center placement for other normal windows
-			x = output_box.x + (width / 2.0) - (window_width / 2.0);
-			y = output_box.y + (height / 2.0) - (window_height / 2.0);
-		}
-
-		// If the window width or height exceeds the screen geometry then resize to fit the screen	
-		struct wlr_box *geo_box = &toplevel->xdg_toplevel->base->current.geometry;;
-		if (geo_box->width > output->width) {
-			wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, output->width, geo_box->height);
-		}
-		if (geo_box->height > output->height) {
-			wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, geo_box->width, output->height);
-		}
-
-		// Set the new window position
-		wlr_scene_node_set_position(&toplevel->scene_tree->node, (int)round(x), (int)round(y));
-
-		// ******************* automatic window placement ******************* //
-		// Get the scene node for the view
-		struct wlr_scene_node *node = &toplevel->scene_tree->node;
-
-		// Executing window placement
-		const char *title = NULL;
-		const char *app_id = NULL;
-		title = toplevel->xdg_toplevel->title;
-		if ((!title) || (title == NULL)) {
-			title = "nil";
-		}
-		app_id = toplevel->xdg_toplevel->app_id;
-		if ((!app_id) || (app_id == NULL)) {
-			app_id = "nil";
-		}
-
-		// Executing window placement
-		char *ids[1024] = {0};
-		char *identifiers[1024] = {0};
-		int x_arr[1024] = {0};
-		int y_arr[1024] = {0};
-
-		// Gets all the titles or app_id of windows in woodland.ini marked for user defined placement
-		// ids - is a char array containing the prefixes keywords (either keyword 'title:' or 'app_id:'
-		// identifiers - is a char array containing the actual window title or app_id
-		// x_arr and y_arr - char arrays containing x and y coordinates of windows to be placed
-		get_window_placement(toplevel->server->config, ids, identifiers, x_arr, y_arr);
-
-		// If 'surface->current.committed' == WLR_SURFACE_STATE_BUFFER it lets us know that
-		// the client required a toplevel move or resize and we can use this information
-		// to filter which windows should be let to use the client required coordinates
-		// and which windows should be always placed in center.
-		bool clientRequiredPlacement = false;
-		if (toplevel->xdg_toplevel->base->surface->current.committed == WLR_SURFACE_STATE_BUFFER) {
-			clientRequiredPlacement = true;
-		}
-
-		if (title != NULL && app_id == NULL) {
-			for (int i = 0; i < 1024 && ids[i] != NULL; i++) {
-				if (strcmp(ids[i], "title:") == 0) {
-				    // If this title is found in woodland.ini for automatic placement
-				    if (strcmp(identifiers[i], title) == 0) {
-				        wlr_scene_node_set_position(node, x_arr[i], y_arr[i]);
-				        break;
-				    }
-				    if (strcmp(identifiers[i], title) != 0 && clientRequiredPlacement && \
-				                                        geo_box->x != 0 && geo_box->y != 0) {
-				        wlr_scene_node_set_position(node, geo_box->x, geo_box->y);
-				        break;
-				    }
-				}
-				// Free resources
-				if (ids[i] != NULL) {
-				    free(ids[i]);
-				    ids[i] = NULL;
-				}
-				if (identifiers[i] != NULL) {
-				    free(identifiers[i]);
-				    identifiers[i] = NULL;
-				}
-			}
-		}
-		else if (title == NULL && app_id != NULL) {
-			for (int i = 0; i < 1024 && ids[i] != NULL; i++) {
-				if (strcmp(ids[i], "app_id:") == 0) {
-				    if (strcmp(identifiers[i], app_id) == 0) {
-				        wlr_scene_node_set_position(node, x_arr[i], y_arr[i]);
-				        break;
-				    }
-				    if (strcmp(identifiers[i], app_id) != 0 && clientRequiredPlacement && \
-				                                        geo_box->x != 0 && geo_box->y != 0) {
-				        wlr_scene_node_set_position(node, geo_box->x, geo_box->y);
-				        break;
-				    }
-				}
-				// Free resources
-				if (ids[i] != NULL) {
-				    free(ids[i]);
-				    ids[i] = NULL;
-				}
-				if (identifiers[i] != NULL) {
-				    free(identifiers[i]);
-				    identifiers[i] = NULL;
-				}
-			}
-		}
-		else if (title != NULL && app_id != NULL) {
-			for (int i = 0; i < 1024 && ids[i] != NULL; i++) {
-				// Set position for windows titles
-				if (strcmp(ids[i], "app_id:") == 0) {
-				    if (strcmp(identifiers[i], app_id) == 0) {
-				        wlr_scene_node_set_position(node, x_arr[i], y_arr[i]);
-				        break;
-				    }
-				    if (strcmp(identifiers[i], app_id) != 0 && clientRequiredPlacement && \
-				                                        geo_box->x != 0 && geo_box->y != 0) {
-				        wlr_scene_node_set_position(node, geo_box->x, geo_box->y);
-				        break;
-				    }
-				}
-				else if (strcmp(ids[i], "title:") == 0) {
-				    if (strcmp(identifiers[i], title) == 0) {
-				        wlr_scene_node_set_position(node, x_arr[i], y_arr[i]);
-				        break;
-				    }
-				    if (strcmp(identifiers[i], title) != 0 && clientRequiredPlacement && \
-				                                        geo_box->x != 0 && geo_box->y != 0) {
-				        wlr_scene_node_set_position(node, geo_box->x, geo_box->y);
-				        break;
-				    }
-				}
-				// Free resources
-				if (ids[i] != NULL) {
-				    free(ids[i]);
-				    ids[i] = NULL;
-				}
-				if (identifiers[i] != NULL) {
-				    free(identifiers[i]);
-				    identifiers[i] = NULL;
-				}
-			}
-		}
-		// ******************* Finished automatic window placement ******************* //
 		// Finalize window creation
 		wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
 
@@ -2832,20 +3326,92 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 		toplevel->request_close.notify = handle_close;
 		wl_signal_add(&toplevel->foreign_handle->events.request_close, &toplevel->request_close);
 
-		// Set the toplevel as resizing as a workaround for scale modifying the size of some toplevels
-		wlr_xdg_toplevel_set_resizing(toplevel->xdg_toplevel, true);
+		// set all the newly created toplevels in the center
+		woodland_toplevel_center(toplevel);
+
+		// ******************* USER DEFINED WINDOW PLACEMENT ******************* //
+		// before applying user-defined window placement we need to check
+		// whether the current toplevel is a main (parent) or transient (child)
+		// we apply automatic placement for main toplevels only and skip transient
+		if (toplevel->xdg_toplevel->parent == NULL) {
+			// Executing window placement
+			const char *title = NULL;
+			const char *app_id = NULL;
+			title = toplevel->xdg_toplevel->title;
+			if ((!title) || (title == NULL)) {
+				title = "nil";
+			}
+			app_id = toplevel->xdg_toplevel->app_id;
+			if ((!app_id) || (app_id == NULL)) {
+				app_id = "nil";
+			}
+
+			// If 'surface->current.committed' == WLR_SURFACE_STATE_BUFFER it lets us know that
+			// the client required a toplevel move or resize and we can use this information
+			// to filter which windows should be let to use the client required coordinates
+			// and which windows should be always placed in center.
+			bool clientRequiredPlacement = false;
+
+			if (toplevel->xdg_toplevel->base->surface->current.committed == WLR_SURFACE_STATE_BUFFER) {
+				clientRequiredPlacement = true;
+			}
+
+			// non-transient toplevel
+			if (!toplevel->xdg_toplevel->parent) {
+
+				bool rule_matched = false;
+				struct wlr_box toplevel_size;
+				wlr_xdg_surface_get_geometry(toplevel->xdg_toplevel->base, &toplevel_size);
+
+				if (server->window_rules) {
+					for (size_t i = 0; i < server->window_rules->count; i++) {
+						struct window_rule *r = &server->window_rules->rules[i];
+						// prefer app_id rules
+						if (app_id && strcmp(r->id, "app_id:") == 0) {
+							if (strcmp(r->identifier, app_id) == 0) {
+								woodland_scene_node_set_position(toplevel, r->x, r->y);
+								rule_matched = true;
+								break;
+							}
+						}
+
+						// title rules
+						if (title && strcmp(r->id, "title:") == 0) {
+							if (strcmp(r->identifier, title) == 0) {
+								woodland_scene_node_set_position(toplevel, r->x, r->y);
+								rule_matched = true;
+								break;
+							}
+						}
+					}
+				}
+
+				// fallback to client placement
+				if (!rule_matched &&
+					clientRequiredPlacement &&
+					toplevel_size.x != 0 &&
+					toplevel_size.y != 0) {
+					woodland_scene_node_set_position(toplevel, toplevel_size.x, toplevel_size.y);
+				}
+			}
+		}
+		// ******************* FINISHED USER DEFINED WINDOW PLACEMENT ******************* //
+		else {
+			wlr_log(WLR_ERROR, "xdg_toplevel_map: Failed output for %s", toplevel->xdg_toplevel->title);
+			// Remove the toplevel from the list of managed windows
+			WL_LIST_SAFE_REMOVE(&toplevel->link);
+			WL_LIST_SAFE_REMOVE(&toplevel->updated_link);
+			if (toplevel->foreign_handle) {
+				wlr_foreign_toplevel_handle_v1_destroy(toplevel->foreign_handle);
+				toplevel->foreign_handle = NULL;
+			}
+		}
 
 		// Focus the toplevel
 		focus_toplevel(toplevel);
-	}
-	else {
-		wlr_log(WLR_ERROR, "xdg_toplevel_map: Failed to assign output for %s", toplevel->xdg_toplevel->title);
-		// Remove the toplevel from the list of managed windows
-		WL_LIST_SAFE_REMOVE(&toplevel->link);
-		if (toplevel->foreign_handle) {
-			wlr_foreign_toplevel_handle_v1_destroy(toplevel->foreign_handle);
-			toplevel->foreign_handle = NULL;
-		}
+		
+		///cycle_windows(server);
+		toplevel->mapped = true;
 	}
 }
 
@@ -2853,10 +3419,6 @@ static void xdg_toplevel_unmap(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct woodland_view *toplevel = wl_container_of(listener, toplevel, unmap);
 	struct woodland_server *server = toplevel->server;
-	toplevel->minimized = false;
-
-	// Remove from list first to prevent re-tiling logic from seeing this window
-	WL_LIST_SAFE_REMOVE(&toplevel->link);
 
 	if (toplevel->foreign_handle) {
 		// Remove listeners first to prevent dangling pointers
@@ -2869,62 +3431,17 @@ static void xdg_toplevel_unmap(struct wl_listener *listener, void *data) {
 		toplevel->foreign_handle = NULL; // Critical NULL assignment
 	}
 
-	struct wlr_box layout_box;
-	wlr_output_layout_get_box(server->output_layout, NULL, &layout_box);
-
-	int window_count = 0;
-	struct woodland_view *win;
-	wl_list_for_each(win, &server->toplevels, link) window_count++;
-
-	struct woodland_output *output;
-	wl_list_for_each(output, &server->outputs, link) {
-		wlr_scene_output_commit(output->scene_output, NULL);
-	}
-
-	//error-chance, z-added
 	if (toplevel == server->grabbed_toplevel) {
 		reset_cursor_mode(server);
 	}
-}
 
-static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
-	/* Called when a new surface state is committed. */
-	(void)data;
-	struct woodland_view *toplevel = wl_container_of(listener, toplevel, commit);
-
-	if (toplevel->xdg_toplevel->base->initial_commit) {
-		/* When an xdg_surface performs an initial commit, the compositor must
-		 * reply with a configure so the client can map the surface. Woodland
-		 * configures the first time opened xdg_toplevel with 0,0 size to let
-		 * the client pick the dimensions itself or if the toplevel has been
-		 * previously opened then it applies the last time saved width and height. */
-		///wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, 0, 0);
-		char app_id_width[128];
-		char app_id_height[128];
-		snprintf(app_id_width, sizeof(app_id_width), "%s_width", toplevel->app_id);
-		snprintf(app_id_height, sizeof(app_id_height), "%s_height", toplevel->app_id);
-		///fprintf(stderr, "app_id_width: %s\n", app_id_width);
-		///fprintf(stderr, "app_id_height: %s\n", app_id_height);
-		int LastToplevelWidth = get_int_value_from_conf(toplevel->server->config_sizes, app_id_width);
-		int LastToplevelHeight = get_int_value_from_conf(toplevel->server->config_sizes, app_id_height);
-
-		/* If the toplevel is firt time opened then it has no records in 'windows_sizes.db
-		 * and 'get_int_value_from_conf' will not find its app_id and will return 1
-		 * wrongly applying width = 1 and height = 1, that's why we need to set all
-		 * the initial first time opened toplevels width and height to 0. Setting it
-		 * to 0 let's the toplevels apply their own size. */
-		if (LastToplevelWidth == 1) {
-			LastToplevelWidth = 0;
-		}
-		if (LastToplevelHeight == 1) {
-			LastToplevelHeight = 0;
-		}
-
-		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, LastToplevelWidth, LastToplevelHeight);
-
-		// Set the toplevel as resizing as a workaround for scale modifying the size of some toplevels
-		wlr_xdg_toplevel_set_resizing(toplevel->xdg_toplevel, true);
+	// Clear the scene node data so the scene graph stops tracking it
+	if (toplevel->scene_tree) {
+		toplevel->scene_tree->node.data = NULL;
 	}
+
+	toplevel->minimized = false;
+	toplevel->mapped = false;
 }
 
 /**
@@ -2953,97 +3470,114 @@ static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
 		return;
 	}
 
+	struct woodland_server *server = toplevel->server;
+	if (!server) {
+		wlr_log(WLR_ERROR, "Server was not found in 'xdg_toplevel_destroy'");
+		return;
+	}
+
 	// Save toplevel size before closing
-	struct wlr_box toplevel_box;
-	wlr_xdg_surface_get_geometry(toplevel->xdg_toplevel->base, &toplevel_box);
-	///fprintf(stderr, "%s_width = %d\n", toplevel->app_id, toplevel_box.width);
-	///fprintf(stderr, "%s_height = %d\n", toplevel->app_id, toplevel_box.height);
+	// we only need to save the sizes for the parent toplevels
+	if (toplevel->resized && toplevel->xdg_toplevel->parent == NULL) {
+		struct wlr_box toplevel_box;
+		wlr_xdg_surface_get_geometry(toplevel->xdg_toplevel->base, &toplevel_box);
+		char app_id_width[256];
+		char app_id_height[256];
+		snprintf(app_id_width, sizeof(app_id_width), "%s_width", toplevel->app_id);
+		snprintf(app_id_height, sizeof(app_id_height), "%s_height", toplevel->app_id);
+		remove_given_text_line_from_conf(toplevel->server->config_sizes, app_id_width);
+		remove_given_text_line_from_conf(toplevel->server->config_sizes, app_id_height);
 
-	// First check is there is any change in this toplevel size since last time
-	bool WriteNewSizes = false;
-	char app_id_width[128];
-	char app_id_height[128];
-	snprintf(app_id_width, sizeof(app_id_width), "%s_width", toplevel->app_id);
-	snprintf(app_id_height, sizeof(app_id_height), "%s_height", toplevel->app_id);
-	///fprintf(stderr, "app_id_width: %s\n", app_id_width);
-	///fprintf(stderr, "app_id_height: %s\n", app_id_height);
-	int LastToplevelWidth = get_int_value_from_conf(toplevel->server->config_sizes, app_id_width);
-	int LastToplevelHeight = get_int_value_from_conf(toplevel->server->config_sizes, app_id_height);
-	///fprintf(stderr, "LastToplevelWidth: %d\n", LastToplevelWidth);
-	///fprintf(stderr, "LastToplevelHeight: %d\n", LastToplevelHeight);
-
-	// If there are any size changes then remove those old lines
-	if ((LastToplevelWidth != toplevel_box.width) || (LastToplevelHeight != toplevel_box.height)) {
-		fprintf(stderr, "New toplevel size doesn't match the last saved size, removing old lines.\n");
-		if (toplevel->resized) {
-			WriteNewSizes = true;
-			remove_given_text_line_from_conf(toplevel->server->config_sizes, app_id_width);
-			remove_given_text_line_from_conf(toplevel->server->config_sizes, app_id_height);
-		}
-	}
-	else {
-		fprintf(stderr, "New toplevel size matches the last saved size, skipping.\n");
-		WriteNewSizes = false;
-	}
-
-	// And now get new size values
-	if (toplevel->resized && WriteNewSizes) {
-		fprintf(stderr, "Writing new sizes for: %s to config.\n", toplevel->app_id);
-		// write toplevel width to server.config_sizes
+		// write toplevel new sizes to server.config_sizes
 		FILE *config_winsizes = fopen(toplevel->server->config_sizes, "a+");
 		if (config_winsizes == NULL) {
 			perror("fopen");
 			return;
 		}
-		// write toplevel width and height to server.config_sizes
 		fprintf(config_winsizes, "%s_width = %d\n", toplevel->app_id, toplevel_box.width);
 		fprintf(config_winsizes, "%s_height = %d\n", toplevel->app_id, toplevel_box.height);
 		fclose(config_winsizes);
 	}
-	// Find the previous view to focus
-	bool focus_surface = false;
-	struct woodland_view *prev_view = NULL;
-	if (!wl_list_empty(&toplevel->server->toplevels)) {
-		struct woodland_view *iter;
-		wl_list_for_each_reverse(iter, &toplevel->server->toplevels, link) {
-			// Skip the current toplevel and check for NULL
-			if (iter && iter != toplevel) {
-				prev_view = iter;
+
+	// Focusing the toplevel underneath the currently closed one
+	// IMMEDIATELY remove it from your tracking list.
+	// This prevents focus_toplevel from "finding" it in the loop.
+	// Completely decouple from all lists FIRST
+	WL_LIST_SAFE_REMOVE(&toplevel->link);
+	WL_LIST_SAFE_REMOVE(&toplevel->updated_link);
+
+	// Clear the scene node data so the scene graph stops tracking it
+	if (toplevel->scene_tree) {
+		toplevel->scene_tree->node.data = NULL;
+	}
+
+	// Find the NEW window to focus.
+	// Since we removed 'toplevel' from server->toplevels above, 
+	// the list is now safe to iterate.
+	struct woodland_view *next_to_focus = NULL;
+	if (!wl_list_empty(&server->toplevels_updated)) {
+		struct woodland_view *v;
+		wl_list_for_each(v, &server->toplevels_updated, updated_link) {
+			if (!v->minimized) {
+				next_to_focus = v;
+				break;
 			}
 		}
 	}
 
-	if (prev_view && prev_view != toplevel) {
-		struct wlr_surface *prev_surface = prev_view->xdg_toplevel->base->surface;
-		if (prev_surface && prev_surface != toplevel->xdg_toplevel->base->surface) {
-			focus_surface = true;
-		}
-	}
+	if (next_to_focus) {
+		// Force the seat to forget the old surface immediately 
+		// to prevent the 'if (prev == surface)' shortcut in focus_toplevel
+		wlr_seat_keyboard_clear_focus(server->seat);
 
-	// Check if we found a valid previous view
-	if (focus_surface && prev_view && \
-		prev_view != toplevel && \
-		prev_view->xdg_toplevel && \
-		prev_view->xdg_toplevel->base) {
-		// Check if the previous view has a valid surface
-		struct wlr_surface *prev_surface = prev_view->xdg_toplevel->base->surface;
-		if (prev_surface && prev_surface != toplevel->xdg_toplevel->base->surface) {
-			// Focus the previous surface
-			wlr_log(WLR_INFO, "Activating previous surface: %p", prev_view->xdg_toplevel->base);
-			focus_toplevel(prev_view);
-		}
-		else {
-			wlr_log(WLR_ERROR, "Previous surface is not valid");
+		// inform the client
+		wlr_xdg_toplevel_set_activated(next_to_focus->xdg_toplevel, true);
+
+		// activate the underneath toplevel
+		wlr_scene_node_raise_to_top(&next_to_focus->scene_tree->node);
+
+		struct wlr_keyboard *kbd = wlr_seat_get_keyboard(server->seat);
+		if (kbd) {
+			wlr_seat_keyboard_notify_enter(server->seat,
+											next_to_focus->xdg_toplevel->base->surface,
+											kbd->keycodes,
+											kbd->num_keycodes,
+											&kbd->modifiers);
+			change_keyboard_layout(server, kbd, toplevel);
 		}
 	}
 	else {
-		wlr_log(WLR_INFO, "No previous surface to focus");
+		wlr_seat_keyboard_clear_focus(server->seat);
 	}
+
+	for (int i = 0; i < 256; i++) {
+		// Only free things you allocated with strdup()
+		if (server->toplevel_info.icon_paths[i] != NULL) {
+			free(server->toplevel_info.icon_paths[i]);
+			server->toplevel_info.icon_paths[i] = NULL;
+		}
+
+		// Simply set pointers to NULL. 
+		server->toplevel_info.app_id[i] = NULL;
+		server->toplevel_info.titles[i] = NULL;
+		server->toplevel_info.views[i] = NULL;
+		server->toplevel_info.minimized[i] = false;
+	}
+
 	if (toplevel->app_id) {
 		free(toplevel->app_id);
 		toplevel->app_id = NULL;
 	}
+
 	// Remove the toplevel from all the lists
+	toplevel->mapped = false;
+	toplevel->resized = false;
+	toplevel->minimized = false;
+	toplevel->maximized = false;
+	toplevel->commit_now = false;
+	toplevel->fullscreen = false;
+	toplevel->was_already_clicked = false;
+
 	WL_LIST_SAFE_REMOVE(&toplevel->map.link);
 	WL_LIST_SAFE_REMOVE(&toplevel->unmap.link);
 	WL_LIST_SAFE_REMOVE(&toplevel->commit.link);
@@ -3055,13 +3589,9 @@ static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
 	WL_LIST_SAFE_REMOVE(&toplevel->request_minimize.link);
 	WL_LIST_SAFE_REMOVE(&toplevel->request_maximize.link);
 	WL_LIST_SAFE_REMOVE(&toplevel->request_fullscreen.link);
+
 	// Free the toplevel
 	if (toplevel) {
-		for (int i = 0; toplevel->server->toplevel_info.app_id[i] != NULL; i++) {
-			// We need to set all the fields to NULL to prevent crash when activating the next toplevel
-			toplevel->server->toplevel_info.app_id[i] = "nil(NULL)";
-			toplevel->server->toplevel_info.titles[i] = "nil(NULL)";
-		}
 		free(toplevel);
 		toplevel = NULL;
 	}
@@ -3086,6 +3616,7 @@ static void server_new_xdg_toplevel(struct wl_listener *listener, void *data) {
 	toplevel->scene_tree = wlr_scene_xdg_surface_create(&toplevel->server->scene->tree, xdg_toplevel->base);
 	toplevel->scene_tree->node.data = toplevel;
 	xdg_toplevel->base->data = toplevel->scene_tree;
+	toplevel->commit_now = true;
 
 	/* Listen to the various events it can emit */
 	toplevel->map.notify = xdg_toplevel_map;
@@ -3128,6 +3659,81 @@ static void xdg_popup_commit(struct wl_listener *listener, void *data) {
 	/* Called when a new surface state is committed. */
 	(void)data;
 	struct woodland_popup *popup = wl_container_of(listener, popup, commit);
+	/* Validate popup wrapper */
+	if (!popup) {
+		return;
+	}
+
+	// Validate xdg_popup
+	struct wlr_xdg_popup *xdg_popup = popup->xdg_popup;
+	if (!xdg_popup || !xdg_popup->base) {
+		return;
+	}
+
+	/*
+	 * We only unconstrain on the first commit.
+	 * Before initial_commit the surface has no valid size,
+	 * and the parent chain may not be fully initialized.
+	 */
+	if (!xdg_popup->base->initial_commit) {
+		return;
+	}
+
+	/*
+	 * Walk up the popup chain to find the root toplevel.
+	 * Popup positioning in wlroots is resolved relative to the
+	 * root xdg_surface (the toplevel), even for nested popups.
+	 * So we must climb:
+	 * popup -> parent popup -> ... -> toplevel
+	 */
+	struct wlr_xdg_surface *root = xdg_popup->base;
+	while (root && root->role == WLR_XDG_SURFACE_ROLE_POPUP) {
+		// Ensure popup role struct is valid
+		if (!root->popup || !root->popup->parent) {
+			return;
+		}
+
+		struct wlr_surface *parent_surface = root->popup->parent;
+
+		// Convert parent wlr_surface to xdg_surface
+		struct wlr_xdg_surface *parent_xdg = wlr_xdg_surface_try_from_wlr_surface(parent_surface);
+
+		if (!parent_xdg) {
+			return;
+		}
+
+		root = parent_xdg;
+	}
+
+	// After traversal, root must exist and have a surface
+	if (!root || !root->surface) {
+		return;
+	}
+
+	/*
+	 * Ensure the root surface has a valid committed size.
+	 * Width/height can be zero if something is wrong.
+	 */
+	if (root->surface->current.width <= 0 ||
+		root->surface->current.height <= 0) {
+		return;
+	}
+
+	/*
+	 * Build constraint box in root surface local coordinates.
+	 * This ensures:
+	 *  - Main popups stay inside toplevel
+	 *  - Submenus preserve anchor offsets
+	 *  - No (0,0) snapping due to wrong coordinate space
+	 */
+	struct wlr_box box = {
+		.x = 0,
+		.y = 0,
+		.width = root->surface->current.width,
+		.height = root->surface->current.height,
+	};
+
+	wlr_xdg_popup_unconstrain_from_box(xdg_popup, &box);
 
 	if (popup->xdg_popup->base->initial_commit) {
 		/* When an xdg_surface performs an initial commit, the compositor must
@@ -3198,28 +3804,6 @@ static void server_new_xdg_popup(struct wl_listener *listener, void *data) {
 		return;
 	}
 
-	// Calculate screen coordinates and place popups within screen resolution
-	// and prevent popups to go beyond screen boundaries
-	struct wlr_output *output = wlr_output_layout_output_at(server->output_layout,
-															server->cursor->x,
-															server->cursor->y);
-
-	if (output) {
-		///struct wlr_box output_box;
-		///wlr_output_layout_get_box(server->output_layout, output, &output_box);
-		int width = server->transformed_width;
-		int height = server->transformed_height;
-
-		struct wlr_box box;
-		box.x = 0;
-		box.y = 0;
-		box.width = width;
-		box.height = height;
-		///box.width = output_box.width;
-		///box.height = output_box.height;
-		wlr_xdg_popup_unconstrain_from_box(xdg_popup, &box);
-	}
-
 	// Add commit signal handler
 	popup->commit.notify = xdg_popup_commit;
 	wl_signal_add(&xdg_popup->base->surface->events.commit, &popup->commit);
@@ -3269,22 +3853,7 @@ static void startup_terminal(void) {
 	wlr_log(WLR_ERROR, "Example: woodland -s appname");
 }
 
-/* Processing startup commands */
-// Function to trim spaces and other whitespace characters from the start and end of a string
-static char *trim(char *str) {
-	char *start = str;
-	char *end = str + strlen(str) - 1;
-	// Trim leading whitespace characters
-	while (isspace((unsigned char)*start)) {
-		start++;
-	}
-	// Trim trailing whitespace characters
-	while (end > start && isspace((unsigned char)*end)) {
-		*end-- = '\0';
-	}
-	return start;
-}
-
+// Processing startup commands
 // Function to process startup commands from the configuration file
 static int process_startup_commands(void *data) {
 	struct woodland_server *server = data;
@@ -3366,9 +3935,9 @@ static void background_setup(struct woodland_server *server,
 	};
 
 	struct wlr_buffer *wlr_buffer = wlr_allocator_create_buffer(server->allocator,
-			                                                   output_width,
-			                                                   output_height,
-			                                                   &format);
+																output_width,
+																output_height,
+																&format);
 	if (!wlr_buffer) {
 		wlr_log(WLR_ERROR, "Failed to create buffer");
 		free(*background_img);
@@ -3433,6 +4002,20 @@ static void background_setup(struct woodland_server *server,
 	*background_img = NULL;
 }
 
+static void free_window_rules(struct window_rules *wr) {
+	if (!wr) {
+		return;
+	}
+
+	for (size_t i = 0; i < wr->count; i++) {
+		free(wr->rules[i].id);
+		free(wr->rules[i].identifier);
+	}
+
+	free(wr->rules);
+	free(wr);
+}
+
 /**
  ******************** Main function ********************
  */
@@ -3460,6 +4043,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	struct woodland_server server = { 0 };
+
 	// Storing full path to config
 	const char *HOME = getenv("HOME");
 	if (HOME == NULL) {
@@ -3482,9 +4066,39 @@ int main(int argc, char *argv[]) {
 	}
 	snprintf(server.config_sizes, strlen(HOME) + strlen(configSizesPath) + 3, "%s%s", HOME, configSizesPath);
 
+	const char *configIconCachePath = "/.config/woodland/icons.cache";
+	server.icon_cache_path = malloc(sizeof(char) * strlen(HOME) + strlen(configIconCachePath) + 3);
+	if (server.icon_cache_path == NULL) {
+		wlr_log(WLR_ERROR, "Failed to allocate memory for icon_cache_path.\n");
+		return 1;
+	}
+	snprintf(server.icon_cache_path, strlen(HOME) + strlen(configIconCachePath) + 3, "%s%s",
+																				HOME,
+																				configIconCachePath);
+
+	const char *localSharePath = "/.local/share/applications";
+	server.local_share_path = malloc(sizeof(char) * strlen(HOME) + strlen(localSharePath) + 3);
+	if (server.local_share_path == NULL) {
+		wlr_log(WLR_ERROR, "Failed to allocate memory for icon_cache_path.\n");
+		return 1;
+	}
+	snprintf(server.local_share_path, strlen(HOME) + strlen(localSharePath) + 3, "%s%s",
+																				HOME,
+																				localSharePath);
+
 	const char *IconsPath = "/.config/woodland/icons";
 
 	/// getting icons
+	server.noicon_path = malloc((sizeof(char) * strlen(HOME)) +
+					(sizeof(char) * strlen(IconsPath)) +
+					(sizeof(char) * strlen("noicon.svg") + 3));
+	snprintf(server.noicon_path, (sizeof(char) * strlen(HOME)) +
+					(sizeof(char) * strlen(IconsPath)) +
+					(sizeof(char) * strlen("noicon.svg") + 3),
+					"%s%s/%s",
+					HOME,
+					IconsPath,
+					"noicon.svg");
 	server.volumeHigh = malloc((sizeof(char) * strlen(HOME)) +
 					(sizeof(char) * strlen(IconsPath)) +
 					(sizeof(char) * strlen("dio-volume-high.svg") + 3));
@@ -3547,9 +4161,6 @@ int main(int argc, char *argv[]) {
 	/* Getting menu variables */
 	server.mn_active_area_x = get_int_value_from_conf(server.config, "mn_active_area_x");
 	server.mn_active_area_y = get_int_value_from_conf(server.config, "mn_active_area_y");
-
-	/* Getting welcome screen command */
-	char *welcome_screen_CMD = get_char_value_from_conf(server.config, "welcome_screen");
 
 	// The Wayland display is managed by libwayland. It handles accepting
 	// clients from the Unix socket, manging Wayland globals, and so on.
@@ -3669,6 +4280,7 @@ int main(int argc, char *argv[]) {
 	// used for application windows. For more detail on shells, refer to
 	// https://drewdevault.com/2018/07/29/Wayland-shells.html.
 	wl_list_init(&server.toplevels);
+	wl_list_init(&server.toplevels_updated);
 	server.xdg_shell = wlr_xdg_shell_create(server.wl_display, 3);
 
 	// Handle toplevels
@@ -3778,6 +4390,13 @@ int main(int argc, char *argv[]) {
 		wlr_log(WLR_ERROR, "Failed to create viewporter!");
 		return 1;
 	}
+
+	// This creates the global object that tells Qt apps not to round scaling factor (e.g. from 1.2 to 2x)
+	if (!wlr_fractional_scale_manager_v1_create(server.wl_display, 1)) {
+		wlr_log(WLR_ERROR, "Failed to create fractional_scale_manager!");
+		return 1;
+	}
+
 	/* Add a Unix socket to the Wayland display. */
 	const char *socket = wl_display_add_socket_auto(server.wl_display);
 	if (!socket) {
@@ -3798,18 +4417,24 @@ int main(int argc, char *argv[]) {
 	// startup command if requested. */
 	setenv("WAYLAND_DISPLAY", socket, true);
 
+	/* Run welcome screen */
+	char *welcome_screen_CMD = get_char_value_from_conf(server.config, "welcome_screen");
+	if (!welcome_screen_CMD) {
+		wlr_log(WLR_ERROR, "No welcome screen command provided in config");
+	}
+	else {
+		wlr_log(WLR_INFO, "welcome_screen_CMD: %s", welcome_screen_CMD);
+		run_cmd(welcome_screen_CMD);
+	}
+
 	struct wlr_output *output = wlr_output_layout_output_at(server.output_layout,
 															server.cursor->x,
 															server.cursor->y);
 	wlr_output_transformed_resolution(output, &server.transformed_width, &server.transformed_height);
-	// Background picture setup
-	char *background_img = get_char_value_from_conf(server.config, "background");
-	if (!background_img) {
-		wlr_log(WLR_ERROR, "No background image provided in config");
-	}
-	else {
-		background_setup(&server, output, &background_img);
-	}
+
+	// getting info of user pre-defined window rules for automatic
+	// windows placement
+	server.window_rules = parse_window_rules(server.config);
 
 	// Panel setup
 	server.cr = NULL;
@@ -3820,15 +4445,39 @@ int main(int argc, char *argv[]) {
 	server.calendar_buffer = NULL;
 	server.wlr_panel_buffer = NULL;
 	server.panel_scene_output = NULL;
+	for (size_t i = 0; i < 256; i++) {
+		server.ssids[i] = NULL;
+		server.items[i] = NULL;
+		server.toplevel_info.views[i] = NULL;
+		server.toplevel_info.titles[i] = NULL;
+		server.toplevel_info.app_id[i] = NULL;
+		server.toplevel_info.icon_paths[i] = NULL;
+	}
+
+	// prepare data for aplauncher
+	setup_desktop_items(&server); // Ensure this doesn't re-malloc the array itself without freeing
+	process_directory(&server, server.local_share_path, false);
+	process_directory(&server, "/usr/local/share/applications", false);
+	process_directory(&server, "/usr/share/applications", false);
+	process_directory(&server, "/usr/local/bin", true);
+	process_directory(&server, "/usr/bin", true);
 
 	// Showing time clock
 	panel_setup(&server, output, PPANEL_WIDTH, PPANEL_HEIGHT);
 
 	// Window list
-	///server.toplevel_info info = {0};
-	server.toplevel_info.titles[0] = '\0';
-	server.toplevel_info.app_id[0] = '\0';
-	server.toplevel_info.minimized[0] = '\0';
+	// Zero out the entire struct. 
+	// This makes all pointers NULL and all bools false.
+	memset(&server.toplevel_info, 0, sizeof(server.toplevel_info));
+
+	// Background picture setup
+	char *background_img = get_char_value_from_conf(server.config, "background");
+	if (!background_img) {
+		wlr_log(WLR_ERROR, "No background image provided in config");
+	}
+	else {
+		background_setup(&server, output, &background_img);
+	}
 
 	// Running startup commands
 	if (startup_cmd) {
@@ -3837,9 +4486,6 @@ int main(int argc, char *argv[]) {
 		}
 	}
 	else {
-		/* Run welcome screen */
-		fprintf(stderr, "welcome_screen_CMD: %s\n", welcome_screen_CMD);
-		run_cmd(welcome_screen_CMD);
 		/*** Startup commands after delay */
 		server.autostart_timer = wl_event_loop_add_timer(server.event_loop,
 														 process_startup_commands,
@@ -3850,7 +4496,6 @@ int main(int argc, char *argv[]) {
 		}
 		wl_event_source_timer_update(server.autostart_timer, 7000);
 	}
-
 	/* Run the Wayland event loop. This does not return until you exit the
 	 * compositor. Starting the backend rigged up all of the necessary event
 	 * loop configuration to listen to libinput events, DRM events, generate
@@ -3861,39 +4506,126 @@ int main(int argc, char *argv[]) {
 	/* Once wl_display_run returns, we shut down the server. */
 	wlr_log(WLR_INFO, "Shutting down Woodland compositor...");
 
+	// free the user-defined window placement rules
+	wlr_log(WLR_DEBUG, "Shutting down window_rules");
+	free_window_rules(server.window_rules);
+
+	wlr_log(WLR_DEBUG, "Shutting down woodland_view");
+	struct woodland_view *v, *vtmp;
+	wl_list_for_each_safe(v, vtmp, &server.toplevels, link) {
+		WL_LIST_SAFE_REMOVE(&v->link);
+		WL_LIST_SAFE_REMOVE(&v->updated_link);
+		free(v);
+	}
 	// Free allocated memory
 	wlr_log(WLR_DEBUG, "Shutting down server.ssids");
 	if (server.ssids[0] != NULL) {
 		for (size_t i = 0; server.ssids[i] != NULL; i++) {
-			fprintf(stderr, "server.ssids[%ld]: %s\n", i, server.ssids[i]);
 			free(server.ssids[i]);
 			server.ssids[i] = NULL;
 		}
 	}
-	wlr_log(WLR_DEBUG, "Shutting down welcome_screen_CMD");
-	if (welcome_screen_CMD) {
-		free(welcome_screen_CMD);
-		welcome_screen_CMD = NULL;
+	wlr_log(WLR_DEBUG, "Shutting down server.toplevel_info");
+	for (int i = 0; i < 256; i++) {
+		// Only free things you allocated with strdup()
+		if (server.toplevel_info.icon_paths[i] != NULL) {
+			free(server.toplevel_info.icon_paths[i]);
+			server.toplevel_info.icon_paths[i] = NULL;
+		}
+
+		// Simply set pointers to NULL. 
+		server.toplevel_info.app_id[i] = NULL;
+		server.toplevel_info.titles[i] = NULL;
+		server.toplevel_info.views[i] = NULL;
+		server.toplevel_info.minimized[i] = false;
 	}
-	wlr_log(WLR_DEBUG, "Shutting down background_img");
-	if (background_img) {
-		free(background_img);
-		background_img = NULL;
+
+	wlr_log(WLR_DEBUG, "Shutting down desktop items");
+	free_desktop_items(&server);
+
+	// --------------------- shutting down timers --------------------- //
+	wlr_log(WLR_DEBUG, "Shutting down server.wifi_scan_timer");
+	if (server.wifi_scan_timer) {
+		wl_event_source_remove(server.wifi_scan_timer);
+		server.wifi_scan_timer = NULL;
 	}
-	wlr_log(WLR_DEBUG, "Shutting down server.backend");
-	if (server.backend) {
-		wlr_backend_destroy(server.backend);
-		server.backend = NULL;
+	wlr_log(WLR_DEBUG, "Shutting down server.time_update_timer");
+	if (server.time_update_timer) {
+		wl_event_source_remove(server.time_update_timer);
+		server.time_update_timer = NULL;
 	}
-	wlr_log(WLR_DEBUG, "Shutting down server.seat");
-	if (server.seat) {
-		wlr_seat_destroy(server.seat);
-		server.seat = NULL;
+	wlr_log(WLR_DEBUG, "Shutting down server.check_pssed_timer");
+	if (server.check_pssed_timer) {
+		wl_event_source_remove(server.check_pssed_timer);
+		server.check_pssed_timer = NULL;
 	}
+	wlr_log(WLR_DEBUG, "Shutting down server.zoom_timer");
+	if (server.zoom_timer) {
+		wl_event_source_remove(server.zoom_timer);
+		server.zoom_timer = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.autostart_timer");
+	if (!server.autostart_cmd_ran && server.autostart_timer) {
+		wl_event_source_remove(server.autostart_timer);
+		server.autostart_timer = NULL;
+	}
+
+	// --------------------- shutting down scene grapth --------------------- //
 	wlr_log(WLR_DEBUG, "Shutting down server.scene");
 	if (server.scene) {
 		wlr_scene_node_destroy(&server.scene->tree.node);
 		server.scene = NULL;
+	}
+
+	// --------------------- shutting down textures --------------------- //
+	wlr_log(WLR_DEBUG, "Shutting down server.applauncher_scene_buffer->texture");
+	if (server.applauncher_scene_buffer) {
+		wlr_texture_destroy(server.applauncher_scene_buffer->texture);
+		server.applauncher_scene_buffer->texture = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.applist_scene_buffer->texture");
+	if (server.applist_scene_buffer) {
+		wlr_texture_destroy(server.applist_scene_buffer->texture);
+		server.applist_scene_buffer->texture = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.background_scene_buffer->texture");
+	if (server.background_scene_buffer) {
+		wlr_texture_destroy(server.background_scene_buffer->texture);
+		server.background_scene_buffer->texture = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.calendar_buffer->texture");
+	if (server.calendar_texture && server.calendar_buffer->texture) {
+		wlr_texture_destroy(server.calendar_buffer->texture);
+		server.calendar_buffer->texture = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.network_buffer->texture");
+	if (server.network_buffer && server.network_buffer->texture) {
+		wlr_texture_destroy(server.network_buffer->texture);
+		server.network_buffer->texture = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.network_buffer");
+	if (server.network_buffer) {
+		wlr_scene_node_destroy(&server.network_buffer->node);
+		server.network_buffer = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.panel_buffer->texture");
+	if (server.panel_buffer->texture) {
+		wlr_texture_destroy(server.panel_buffer->texture);
+		server.panel_buffer->texture = NULL;
+	}
+
+	// --------------------- shutting down buffers --------------------- //
+	wlr_log(WLR_DEBUG, "Shutting down free_desktop_items");
+	free_desktop_items(&server);
+	wlr_log(WLR_DEBUG, "Shutting down server.applist_scene_buffer");
+	if (server.applist_scene_buffer) {
+		wlr_scene_node_destroy(&server.applist_scene_buffer->node);
+		server.applist_scene_buffer = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.applauncher_scene_buffer");
+	if (server.applauncher_scene_buffer) {
+		wlr_scene_node_destroy(&server.applauncher_scene_buffer->node);
+		server.applauncher_scene_buffer = NULL;
 	}
 	wlr_log(WLR_DEBUG, "Shutting down server.config_sizes");
 	if (server.config_sizes) {
@@ -3909,6 +4641,11 @@ int main(int argc, char *argv[]) {
 	if (server.brightness_path) {
 		free(server.brightness_path);
 		server.brightness_path = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down welcome_screen_CMD");
+	if (welcome_screen_CMD) {
+		free(welcome_screen_CMD);
+		welcome_screen_CMD = NULL;
 	}
 	wlr_log(WLR_DEBUG, "Shutting down server.play_pause");
 	if (server.play_pause) {
@@ -3935,6 +4672,21 @@ int main(int argc, char *argv[]) {
 		free(server.config);
 		server.config = NULL;
 	}
+	wlr_log(WLR_DEBUG, "Shutting down server.icon_cache_path");
+	if (server.icon_cache_path) {
+		free(server.icon_cache_path);
+		server.icon_cache_path = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.local_share_path");
+	if (server.local_share_path) {
+		free(server.local_share_path);
+		server.local_share_path = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.noicon_path");
+	if (server.noicon_path) {
+		free(server.noicon_path);
+		server.noicon_path = NULL;
+	}
 	wlr_log(WLR_DEBUG, "Shutting down server.volumeHigh");
 	if (server.volumeHigh) {
 		free(server.volumeHigh);
@@ -3950,32 +4702,6 @@ int main(int argc, char *argv[]) {
 		free(server.networkIcon);
 		server.networkIcon = NULL;
 	}
-	wlr_log(WLR_DEBUG, "Shutting down server.wlr_panel_buffer");
-	if (server.wlr_panel_buffer) {
-		wlr_buffer_drop(server.wlr_panel_buffer);
-		server.wlr_panel_buffer = NULL;
-	}
-	wlr_log(WLR_DEBUG, "Shutting down server.background_scene_buffer->texture");
-	if (server.background_scene_buffer) {
-		wlr_texture_destroy(server.background_scene_buffer->texture);
-		server.background_scene_buffer->texture = NULL;
-	}
-	wlr_log(WLR_DEBUG, "Shutting down server.panel_buffer->texture");
-	if (server.panel_buffer->texture) {
-		wlr_texture_destroy(server.panel_buffer->texture);
-		server.panel_buffer->texture = NULL;
-	}
-	wlr_log(WLR_DEBUG, "Shutting down server.calendar_buffer->texture");
-	if (server.calendar_texture && server.calendar_buffer->texture) {
-		cairo_surface_flush(server.cairo_surface);
-		wlr_texture_destroy(server.calendar_buffer->texture);
-		server.calendar_buffer->texture = NULL;
-	}
-	wlr_log(WLR_DEBUG, "Shutting down server.network_buffer->texture");
-	if (server.network_texture && server.network_buffer->texture) {
-		wlr_texture_destroy(server.network_buffer->texture);
-		server.network_buffer->texture = NULL;
-	}
 	wlr_log(WLR_DEBUG, "Shutting down server.font_face");
 	if (server.font_face) {
 		cairo_font_face_destroy(server.font_face);
@@ -3988,28 +4714,14 @@ int main(int argc, char *argv[]) {
 	}
 	wlr_log(WLR_DEBUG, "Shutting down server.cairo_surface");
 	if (server.cairo_surface) {
+		cairo_surface_flush(server.cairo_surface);
 		cairo_surface_destroy(server.cairo_surface);
 		server.cairo_surface = NULL;
-	}
-	wlr_log(WLR_DEBUG, "Shutting down server.time_update_timer");
-	if (server.time_update_timer) {
-		wl_event_source_remove(server.time_update_timer);
-		server.time_update_timer = NULL;
-	}
-	wlr_log(WLR_DEBUG, "Shutting down server.autostart_timer");
-	if (!server.autostart_cmd_ran && server.autostart_timer) {
-		wl_event_source_remove(server.autostart_timer);
-		server.autostart_timer = NULL;
 	}
 	wlr_log(WLR_DEBUG, "Shutting down server.output_layout");
 	if (server.output_layout) {
 		wlr_output_layout_destroy(server.output_layout);
 		server.output_layout = NULL;
-	}
-	wlr_log(WLR_DEBUG, "Shutting down server.renderer");
-	if (server.renderer) {
-		wlr_renderer_destroy(server.renderer);
-		server.renderer = NULL;
 	}
 	wlr_log(WLR_DEBUG, "Shutting down server.cursor_mgr");
 	if (server.cursor_mgr) {
@@ -4020,6 +4732,38 @@ int main(int argc, char *argv[]) {
 	if (server.cursor) {
 		wlr_cursor_destroy(server.cursor);
 		server.cursor = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.wlr_panel_buffer");
+	if (server.wlr_panel_buffer) {
+		wlr_buffer_drop(server.wlr_panel_buffer);
+		server.wlr_panel_buffer = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.titles_scene_buffer");
+	if (server.titles_scene_buffer) {
+		wlr_scene_node_destroy(&server.titles_scene_buffer->node);
+		server.titles_scene_buffer = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.menu_scene_buffer");
+	if (server.menu_scene_buffer) {
+		wlr_scene_node_destroy(&server.menu_scene_buffer->node);
+		server.menu_scene_buffer = NULL;
+	}
+
+	// --------------------- shutting down compositor components --------------------- //
+	wlr_log(WLR_DEBUG, "Shutting down server.backend");
+	if (server.backend) {
+		wlr_backend_destroy(server.backend);
+		server.backend = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.seat");
+	if (server.seat) {
+		wlr_seat_destroy(server.seat);
+		server.seat = NULL;
+	}
+	wlr_log(WLR_DEBUG, "Shutting down server.renderer");
+	if (server.renderer) {
+		wlr_renderer_destroy(server.renderer);
+		server.renderer = NULL;
 	}
 	wlr_log(WLR_DEBUG, "Shutting down server.allocator");
 	if (server.allocator) {

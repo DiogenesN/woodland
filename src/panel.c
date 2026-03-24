@@ -1,20 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "panel.h"
 #include "woodland.h"
 #include "dbus-network-management.h"
-
-struct wl_event_source *network_scan_timer;
-
-static bool calendar_was_activated = false;
-static bool network_applet_was_activated = false;
 
 /* Panel Icons */
 RsvgHandle *svgSound = NULL;
 RsvgHandle *svgBrightness = NULL;
 RsvgHandle *svgNetwork = NULL;
-
-int update_time(void *data);
-static void panel(struct woodland_server *server, int panel_width, int panel_height);
 
 static struct wlr_drm_format format = {
 	.format = DRM_FORMAT_ARGB8888,
@@ -48,9 +41,14 @@ static void create_cairo(struct woodland_server *server, int panel_width, int pa
 static void destroy_cairo(struct woodland_server *server) {
 	if (server->cr) {
 		cairo_destroy(server->cr);
-		cairo_font_face_destroy(server->font_face);
 		server->cr = NULL;
 	}
+
+	if (server->font_face) {
+		cairo_font_face_destroy(server->font_face);
+		server->font_face = NULL;
+	}
+
 	if (server->cairo_surface) {
 		cairo_surface_flush(server->cairo_surface);
 		cairo_surface_destroy(server->cairo_surface);
@@ -74,9 +72,10 @@ static void create_panel_buffer(struct woodland_server *server, int panel_width,
 		fprintf(stderr, "wlr_scene_buffer failed in 'panel'!");
 		return;
 	}
-	// Set the title for the panel
-	const char *my_string = "woodland_panel";
-	server->panel_buffer->node.data = (void *)my_string;
+	// Set the enum title for the panel
+	if (server->panel_buffer) {
+		server->panel_buffer->node.data = (void *)(uintptr_t)NODE_TYPE_PANEL;
+	}
 }
 
 void panel_setup(struct woodland_server *server,
@@ -117,8 +116,8 @@ int update_time(void *data) {
 	}
 	
 	// Calling panel every second
-	destroy_cairo(server);
-	create_cairo(server, PPANEL_WIDTH, PPANEL_HEIGHT);
+	///destroy_cairo(server);
+	///create_cairo(server, PPANEL_WIDTH, PPANEL_HEIGHT);
 	panel(server, PPANEL_WIDTH, PPANEL_HEIGHT);
 
 	if (server->time_update_timer) {
@@ -128,21 +127,24 @@ int update_time(void *data) {
 }
 
 // Getting current time function
-static char *get_current_time() {
+static void get_current_time(char buf[6]) {
 	time_t rawtime;
 	struct tm *timeinfo;
-	char *current_time = malloc(6 * sizeof(char));
-	if (current_time == NULL) {
-		fprintf(stderr, "Failed to allocate memory for current_time\n");
-		return NULL;
-	}
+
 	time(&rawtime);
 	timeinfo = localtime(&rawtime);
-	strftime(current_time, 6, "%R", timeinfo);
-	return current_time;
+	strftime(buf, 6, "%R", timeinfo);
 }
 
 /**************************** Network applet ****************************/
+void clean_ssids(struct woodland_server *server) {
+	for (size_t i = 0; i < 256; i++) {
+		free(server->ssids[i]); // safe even if NULL
+		server->ssids[i] = NULL;
+	}
+	///fprintf(stderr, "Cleaning ssids done!\n");
+}
+
 static void create_network_applet(struct woodland_server *server) {
 	int cwidth = PNETWORK_WIDTH;
 	int cheight = PNETWORK_HEIGHT;
@@ -159,36 +161,90 @@ static void create_network_applet(struct woodland_server *server) {
 	wlr_scene_node_set_enabled(&server->network_buffer->node, true);
 	wlr_scene_node_raise_to_top(&server->network_buffer->node);
 
-	// Setting the title for the applet
-	const char *my_string = "woodland_network_applet";
-	server->network_buffer->node.data = (void *)my_string;
+	// Setting the enum title for the netwoek applet
+	server->network_buffer->node.data = (void *)(uintptr_t)NODE_TYPE_NETWORK_APPLET;
 
 	// Drop the reference, the scene node will hold it
 	wlr_buffer_drop(wlr_buffer);
 }
 
-static int scan_network(void *data) {
+static int wifi_scan_complete(void *data) {
 	struct woodland_server *server = data;
-	if (server->ssids[0] != NULL) {
-		for (size_t i = 0; server->ssids[i] != NULL; i++) {
-			///printf("In 'scan_network' freeing up SSID[%zu]: %s\n", i, server->ssids[i]);
-			free(server->ssids[i]); // Don't forget to free
-			server->ssids[i] = NULL;
-		}
-	}
-	fprintf(stderr, "Scanning for networks...\n");
-	server->number_of_ssids = list_wifi_devices(server->ssids, 256);
+
+	clean_ssids(server);
+
+	///fprintf(stderr, "Scan finished, collecting networks...\n");
+	server->number_of_ssids = list_wifi_devices(server->ssids, 256, false);
+
 	if (server->number_of_ssids <= 0) {
 		server->ssids[0] = strdup("No networks found! Is wifi enabled?");
 	}
-	fprintf(stderr, "Scanning done!\n");
-	wl_event_source_remove(network_scan_timer);
+
+	if (server->wifi_scan_timer) {
+		wl_event_source_remove(server->wifi_scan_timer);
+		server->wifi_scan_timer = NULL;
+	}
+	///fprintf(stderr, "Scanning done!\n");
+	return 0; // one-shot timer
+}
+
+/* Refresh Wi-Fi network list */
+int refresh_networks(void *data) {
+	struct woodland_server *server = data;
+	// Trigger scan (passing 256 as max to be safe)
+
+	clean_ssids(server);
+	server->ssids[0] = strdup("Please wait, scanning ...");
+
+	server->number_of_ssids = list_wifi_devices(server->ssids, 256, true);
+
+	if (auth_success && !server->network_password_prompt) {
+		free(server->ssids[0]);
+		server->ssids[0] = NULL;
+		server->ssids[0] = strdup("Please wait, scanning ...");
+		auth_success = false;
+	}
+	else if (auth_success && server->network_password_prompt) {
+		free(server->ssids[0]);
+		server->ssids[0] = NULL;
+		server->ssids[0] = strdup("Successfully Connected!");
+		auth_success = false;
+		server->network_password_prompt = false;
+	}
+	else if (!auth_success && server->network_password_prompt) {
+		free(server->ssids[0]);
+		server->ssids[0] = NULL;
+		server->ssids[0] = strdup("wrong password, try again!");
+		auth_success = false;
+		server->network_password_prompt = false;
+	}
+
+	// Timer logic.
+	if (!server->wifi_scan_timer) {
+		server->wifi_scan_timer = wl_event_loop_add_timer(server->event_loop, wifi_scan_complete, server);
+	}
+	wl_event_source_timer_update(server->wifi_scan_timer, 10000);
+	server->network_applet_was_activated = true;
 	return 0;
 }
 
 static void show_network_applet(struct woodland_server *server) {
 	if (!server->network_buffer) {
 		create_network_applet(server);
+	}
+
+	if (server->network_is_clicked && !server->network_applet_was_activated) {
+		///refresh_networks(server);
+		clean_ssids(server);
+		server->ssids[0] = strdup("Please wait, scanning ...");
+		server->number_of_ssids = list_wifi_devices(server->ssids, 256, true);
+
+		// Timer logic.
+		if (!server->wifi_scan_timer) {
+			server->wifi_scan_timer = wl_event_loop_add_timer(server->event_loop, wifi_scan_complete, server);
+		}
+		wl_event_source_timer_update(server->wifi_scan_timer, 10000);
+		server->network_applet_was_activated = true;
 	}
 
 	int cwidth = PNETWORK_WIDTH;
@@ -217,68 +273,46 @@ static void show_network_applet(struct woodland_server *server) {
 
 	/******************************************************************************************/
 	// Calculating the size to place the text in the center
-	char dateBuffer[256];
-	double text_width = 0;
-	double x_position = 0;
 	// Get the width of the widget and font size
 	int widget_width = cwidth;
 	double font_size = 15.0;
 	int text_pos_y = 25;
 
-	if (server->network_is_clicked && !network_applet_was_activated) {
-		if (server->ssids[0] != NULL) {
-			for (size_t i = 0; server->ssids[i] != NULL; i++) {
-				///fprintf(stderr, "In 'show_network_applet' freeing up SSID[%zu]: %s\n", i, server->ssids[i]);
-				free(server->ssids[i]); // Don't forget to free
-				server->ssids[i] = NULL;
-			}
-		}
-		server->ssids[0] = strdup("Please wait, scanning ...");
-		network_applet_was_activated = true;
-		network_scan_timer = wl_event_loop_add_timer(server->event_loop, scan_network, server);
-		wl_event_source_timer_update(network_scan_timer, 3000);
-	}
-	///fprintf(stderr, "server->ssids[0]: %s\n", server->ssids[0]);
-	for (int i = 0; server->ssids[i] != NULL; i++) {
-		///fprintf(stderr, "ssids[%d]: %s\n", i, ssids[i]);
-		snprintf(dateBuffer, sizeof(dateBuffer), "%s", server->ssids[i]);
-		// Set font size and calculate text extents
-		cairo_set_font_size(ccr, font_size);
-		cairo_text_extents_t extents;
-		cairo_text_extents(ccr, dateBuffer, &extents);
+	// 1. Pre-calculate the "state" once before the loop
+	bool is_no_networks = (server->ssids[0] && strcmp(server->ssids[0],
+							"No networks found! Is wifi enabled?") == 0);
+	bool is_wrong_pass = (server->ssids[0] && strcmp(server->ssids[0], "wrong password, try again!") == 0);
+	bool is_scanning   = (server->ssids[0] && strcmp(server->ssids[0], "Please wait, scanning ...") == 0);
+	bool is_error      = (is_no_networks || is_wrong_pass);
+	bool is_valid_list = (!is_error && !is_scanning);
 
-		// Calculate x position to center the text in the widget
-		text_width = extents.width;
-		x_position = (widget_width - text_width) / 2.0;
-		// Highlight as green the currently active network connection
-		if (i == 0 &&
-			server->ssids[0] != NULL &&
-			strcmp(server->ssids[0], "No networks found! Is wifi enabled?") != 0 &&
-			strcmp(server->ssids[0], "Please wait, scanning ...") != 0) {
-			cairo_set_source_rgb(ccr, 0.4, 0.9, 0.3); // light green
+	cairo_set_font_size(ccr, font_size);
+
+	for (int i = 0; server->ssids[i] != NULL; i++) {
+		cairo_text_extents_t extents;
+		cairo_text_extents(ccr, server->ssids[i], &extents);
+
+		double x_position = (widget_width - extents.width) / 2.0;
+
+		// --- Logic: Determine Text Color ---
+		if (is_error && i == 0) {
+			cairo_set_source_rgb(ccr, 0.9, 0.3, 0.3); // Error Red
 		}
-		// Highlight as red all the errors
-		else if (server->ssids[0] != NULL &&
-				strcmp(server->ssids[0], "No networks found! Is wifi enabled?") == 0) {
-			cairo_set_source_rgb(ccr, 0.9, 0.3, 0.3); // light red
+		else if (i == server->SsidPosition && is_valid_list) {
+			cairo_set_source_rgb(ccr, 0.4, 0.6, 0.9); // Hover Blue
+		}
+		else if (i == 0 && is_valid_list) {
+			cairo_set_source_rgb(ccr, 0.4, 0.9, 0.3); // Connected Green
 		}
 		else {
-			cairo_set_source_rgb(ccr, 1, 1, 1); // white text
-		}
-		cairo_move_to(ccr, x_position, text_pos_y);
-		cairo_show_text(ccr, server->ssids[i]);
-		// Highlight currently hovered
-		if (server->ssids[0] != NULL &&
-			strcmp(server->ssids[0], "No networks found! Is wifi enabled?") != 0 &&
-			strcmp(server->ssids[0], "Please wait, scanning ...") != 0 &&
-			server->ssids[server->SsidPosition] != NULL &&
-			i == server->SsidPosition) {
-			cairo_move_to(ccr, x_position, text_pos_y);
-			cairo_set_source_rgb(ccr, 0.4, 0.6, 0.9); // light blue
-			cairo_show_text(ccr, server->ssids[server->SsidPosition]);
+			cairo_set_source_rgb(ccr, 1.0, 1.0, 1.0); // Default White
 		}
 
-		text_pos_y = text_pos_y + 26;
+		// --- Draw once ---
+		cairo_move_to(ccr, x_position, text_pos_y);
+		cairo_show_text(ccr, server->ssids[i]);
+		cairo_surface_flush(ccairo_surface);
+		text_pos_y += 26;
 	}
 	/******************************************************************************************/
 	// Constructing the buffer and showing it on the screen
@@ -309,8 +343,8 @@ static void show_network_applet(struct woodland_server *server) {
 	wlr_scene_node_raise_to_top(&server->network_buffer->node);
 	wlr_scene_node_set_enabled(&server->network_buffer->node, true);
 
-	cairo_destroy(ccr);
 	cairo_surface_flush(ccairo_surface);
+	cairo_destroy(ccr);
 	cairo_surface_destroy(ccairo_surface);
 	ccr = NULL;
 	ccairo_surface = NULL;
@@ -364,96 +398,135 @@ static void show_calendar(struct woodland_server *server) {
 	cairo_paint(ccr);
 
 	/******************************************************************************************/
-	/// Get current time
+	// Get current time (thread-safe)
 	time_t rawtime;
-	struct tm *timeinfo;
 	time(&rawtime);
-	timeinfo = localtime(&rawtime);
-	int current_day = timeinfo->tm_mday; // Day of the month
 
+	struct tm now;
+	localtime_r(&rawtime, &now);
+	int current_day   = now.tm_mday;
+
+	// Compute first day of month
+	struct tm first = now;
+	first.tm_mday = 1;
+	mktime(&first);
+
+	// Convert Sunday=0 to Monday=0 layout
+	int first_day_of_week = first.tm_wday;
+	first_day_of_week = (first_day_of_week == 0) ? 6 : first_day_of_week - 1;
+
+	// Compute number of days in month (leap-year correct)
+	struct tm next_month = first;
+	next_month.tm_mon += 1;
+	next_month.tm_mday = 1;
+	mktime(&next_month);
+
+	next_month.tm_mday = 0;   // last day of current month
+	mktime(&next_month);
+
+	int days_in_month = next_month.tm_mday;
+
+	// Precompute weekday abbreviations (Monday-first order)
+	const char *weekday_names[7] = {
+		"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"
+	};
+
+	// Layout
+	int rows = 6;
+	int cols = 7;
+
+	int cell_width  = (cwidth  / cols);
+	int cell_height = (cheight / (rows + 1));
+
+	// Cairo setup
 	cairo_set_font_face(ccr, server->font_face);
-	cairo_set_font_size(ccr, 15.0);
-	cairo_set_source_rgb(ccr, 1.0, 1.0, 1.0); // White text color
-	cairo_set_line_width(ccr, 1.0); // Set a default line width for the grid
+	cairo_set_source_rgb(ccr, 1.0, 1.0, 1.0);
+	cairo_set_line_width(ccr, 1.0);
 
-	// Calculate cell width and height for the calendar grid
-	int cell_width = cwidth / 7; // Assuming a week starts on Sunday
-	int cell_height = cheight / 7;
+	// Render grid
+	for (int row = 0; row < rows; row++) {
+		for (int col = 0; col < cols; col++) {
 
-	/// Calculate the day of the week for the first day of the month
-	struct tm first_day_tm = *timeinfo;
-	first_day_tm.tm_mday = 1;
-	mktime(&first_day_tm);
+			int index = row * cols + col;
+			int day = index - first_day_of_week + 1;
 
-	int first_day_of_week = first_day_tm.tm_wday; // 0 = Sunday, 1 = Monday, ...
-	if (first_day_of_week == 0) { // Adjust for Monday being the first day
-		first_day_of_week = 6; // Sunday becomes 6
-	}
-	else {
-		first_day_of_week--; // Shift other days back by one
-	}
+			if (day < 1 || day > days_in_month)
+				continue;
 
-	/// Draw calendar grid
-	for (int row = 0; row < 6; row++) {
-		for (int col = 0; col < 7; col++) {
-			int day = (row * 7) + col - first_day_of_week + 1; // Day of the month
-			if (day <= 31 && day >= 1) {
-				int x = col * cell_width;
-				int y = row * cell_height;
-				cairo_rectangle(ccr, x, y, cell_width, cell_height);
-				cairo_stroke(ccr); // Stroke the rectangle
+			int x = col * cell_width;
+			int y = row * cell_height;
 
-				/// Highlight current day with stroke
-				if (day == current_day) {
-					cairo_set_source_rgb(ccr, 1.0, 0.0, 0.0); // Red color for stroke
-					cairo_set_line_width(ccr, 5.0); // Adjust the line width as needed
-					/// Adjust the rectangle dimensions to fit within the stroke
-					cairo_rectangle(ccr, x + 1, y + 1, cell_width - 2, cell_height - 2);
-					cairo_stroke(ccr);
-				}
-				cairo_set_line_width(ccr, 1.0); /// thickness of squares frame
-				cairo_set_source_rgb(ccr, 1.0, 1.0, 1.0); // White text color
-				cairo_move_to(ccr, x + 5, y + 15); // Adjust text position within cell
-				char day_str[4]; // Buffer to hold the day name (3 letters + null terminator)
-				strftime(day_str, sizeof(day_str), "%a", &first_day_tm); // Format day name
-				cairo_show_text(ccr, day_str); // Display day name
+			// Draw cell border
+			cairo_rectangle(ccr, x, y, cell_width, cell_height);
+			cairo_stroke(ccr);
 
-				/// Display date number
-				char date_str[3]; // Buffer to hold the date number (2 digits + null terminator)
-				snprintf(date_str, sizeof(date_str), "%d", day); // Convert day to string
-				cairo_move_to(ccr, x + 5, y + 35); // Adjust text position for date number
-				cairo_set_font_size(ccr, 17.0); /// numbers size
-				cairo_show_text(ccr, date_str); // Display date number
+			// Highlight current day
+			if (day == current_day) {
+				cairo_save(ccr);
 
-				first_day_tm.tm_mday++; // Move to the next day for the next iteration
-				mktime(&first_day_tm); // Update the time structure
+				cairo_set_source_rgb(ccr, 1.0, 0.0, 0.0);
+				cairo_set_line_width(ccr, 4.0);
+
+				cairo_rectangle(
+					ccr,
+					x + 2,
+					y + 2,
+					cell_width  - 4,
+					cell_height - 4
+				);
+				cairo_stroke(ccr);
+
+				cairo_restore(ccr);
 			}
+
+			/// Compute weekday index (Monday-first)
+			int weekday = (first_day_of_week + (day - 1)) % 7;
+			const char *day_name = weekday_names[weekday];
+
+			// ---- Draw weekday abbreviation (centered upper half) ----
+			cairo_set_font_size(ccr, 15.0);
+
+			cairo_text_extents_t ext;
+			cairo_text_extents(ccr, day_name, &ext);
+
+			double tx = x + (cell_width  - ext.width)  / 2 - ext.x_bearing;
+			double ty = y + (cell_height * 0.35) + ext.height / 2;
+
+			cairo_move_to(ccr, tx, ty);
+			cairo_show_text(ccr, day_name);
+
+			// ---- Draw date number (centered lower half) ----
+			char date_str[12];
+			snprintf(date_str, sizeof(date_str), "%d", day);
+
+			cairo_set_font_size(ccr, 18.0);
+			cairo_text_extents(ccr, date_str, &ext);
+
+			tx = x + (cell_width  - ext.width)  / 2 - ext.x_bearing;
+			ty = y + (cell_height * 0.75) + ext.height / 2;
+
+			cairo_move_to(ccr, tx, ty);
+			cairo_show_text(ccr, date_str);
 		}
 	}
 
-	char dateBuffer[128];
-	strftime(dateBuffer, sizeof(dateBuffer), "%A, %d %B %Y", timeinfo);
+	// Bottom full date string
+	char date_buffer[128];
+	strftime(date_buffer, sizeof(date_buffer), "%A, %d %B %Y", &now);
 
-	// Get the width of the widget and font size
-	int widget_width = cwidth;
-	double font_size = 20.0;
+	cairo_set_font_size(ccr, 20.0);
 
-	// Set font size and calculate text extents
-	cairo_set_font_size(ccr, font_size);
 	cairo_text_extents_t extents;
-	cairo_text_extents(ccr, dateBuffer, &extents);
+	cairo_text_extents(ccr, date_buffer, &extents);
 
-	// Calculate x position to center the text in the widget
-	double text_width = extents.width;
-	double x_position = (widget_width - text_width) / 2.0;
+	double text_x = (cwidth - extents.width) / 2 - extents.x_bearing;
+	double text_y = (cheight - 10);
 
-	// Move to the calculated x position and show the text
-	cairo_move_to(ccr, x_position, 310);  // y-coordinate remains unchanged
-	cairo_show_text(ccr, dateBuffer);     // Display centered text
+	cairo_move_to(ccr, text_x, text_y);
+	cairo_show_text(ccr, date_buffer);
 
-	/// draw frame around
-	cairo_set_source_rgba(ccr, 1.0, 1.0, 1.0, 1.0);
-	cairo_set_line_width(ccr, 3);
+	/// Outer frame
+	cairo_set_line_width(ccr, 3.0);
 	cairo_rectangle(ccr, 0, 0, cwidth, cheight);
 	cairo_stroke(ccr);
 	/******************************************************************************************/
@@ -494,18 +567,12 @@ static void show_calendar(struct woodland_server *server) {
 /**************************** Time ****************************/
 // This approach excludes any memory leaks concerning Cairo
 static void show_time(struct woodland_server *server, int panel_width, int panel_height) {
-	const char *currentTime = get_current_time();
+	char currentTime[6];
+	get_current_time(currentTime);
 	cairo_set_font_size(server->cr, 24);
 	cairo_set_source_rgb(server->cr, 1, 1, 1);
 	cairo_move_to(server->cr, panel_width - 170, (panel_height / 2) + 9);
-
-	if (currentTime) {
-		cairo_show_text(server->cr, currentTime);
-	}
-	else {
-		cairo_show_text(server->cr, "N/A");
-	}
-	free((void *)currentTime);
+	cairo_show_text(server->cr, currentTime);
 	cairo_surface_flush(server->cairo_surface);
 }
 
@@ -573,7 +640,7 @@ static void show_network(struct woodland_server *server, int panel_width, int pa
  **************************** Panel ****************************
  */
 // This function runs in a loop every second
-static void panel(struct woodland_server *server, int panel_width, int panel_height) {
+void panel(struct woodland_server *server, int panel_width, int panel_height) {
 	if (!server) {
 		fprintf(stderr, "No 'time_update_timer' or 'server' in 'panel'!\n");
 		return;
@@ -589,6 +656,7 @@ static void panel(struct woodland_server *server, int panel_width, int panel_hei
 		if (server->calendar_buffer) {
 			wlr_scene_node_set_enabled(&server->calendar_buffer->node, false);
 		}
+		destroy_cairo(server);
 		return;
 	}
 	else if (server->cairo_surface && !server->panel_is_hidden) {
@@ -611,15 +679,15 @@ static void panel(struct woodland_server *server, int panel_width, int panel_hei
 		show_network(server, panel_width, panel_height);
 
 		// Calendar widget
-		if (!calendar_was_activated && server->time_is_clicked) {
+		if (!server->calendar_was_activated && server->time_is_clicked) {
 			///fprintf(stderr, "Open calendar\n");
 			show_calendar(server);
-			calendar_was_activated = true;
+			server->calendar_was_activated = true;
 		}
-		if (server->calendar_buffer && !server->time_is_clicked && calendar_was_activated) {
+		if (server->calendar_buffer && !server->time_is_clicked && server->calendar_was_activated) {
 			///fprintf(stderr, "Close calendar\n");
 			wlr_scene_node_set_enabled(&server->calendar_buffer->node, false);
-			calendar_was_activated = false;
+			server->calendar_was_activated = false;
 		}
 
 		// Network applet widget
@@ -632,7 +700,7 @@ static void panel(struct woodland_server *server, int panel_width, int panel_hei
 			///fprintf(stderr, "Close network applet\n");
 			wlr_scene_node_set_enabled(&server->network_buffer->node, false);
 			server->network_was_activated = false;
-			network_applet_was_activated = false;
+			server->network_applet_was_activated = false;
 		}
 
 		// Constructing the buffer and showing it on the screen
@@ -664,14 +732,14 @@ static void panel(struct woodland_server *server, int panel_width, int panel_hei
 		int right_corner_y = output_height - PPANEL_HEIGHT;
 
 		// Upload text to buffer texture
-		wlr_scene_node_set_position(&server->panel_buffer->node, right_corner_x, right_corner_y);
-		wlr_scene_node_raise_to_top(&server->panel_buffer->node);
-
-		// Rendering
-		// We need to toggle the node enable/disable for it to update
-		// it's content (i couldn't find another solution)
-		wlr_scene_node_set_enabled(&server->panel_buffer->node, false);
-		wlr_scene_node_set_enabled(&server->panel_buffer->node, true);
-
+		if (server->panel_buffer) {
+			wlr_scene_node_set_position(&server->panel_buffer->node, right_corner_x, right_corner_y);
+			wlr_scene_node_raise_to_top(&server->panel_buffer->node);
+			// Rendering
+			// We need to toggle the node enable/disable for it to update
+			// it's content (i couldn't find another solution)
+			wlr_scene_node_set_enabled(&server->panel_buffer->node, false);
+			wlr_scene_node_set_enabled(&server->panel_buffer->node, true);
+		}
 	}
 }

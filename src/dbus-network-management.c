@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "headers.h"
+#include "dbus-network-management.h"
 
 #define NM_PATH "/org/freedesktop/NetworkManager"
 #define NM_IFACE "org.freedesktop.NetworkManager"
@@ -11,6 +12,8 @@
 #define NM_AP_INTERFACE "org.freedesktop.NetworkManager.AccessPoint"
 #define NM_SETTINGS_INTERFACE "org.freedesktop.NetworkManager.Settings"
 #define NM_WIRELESS_DEVICE_INTERFACE "org.freedesktop.NetworkManager.Device.Wireless"
+
+bool auth_success = true;
 
 static bool check_dbus_error(DBusError *error) {
 	if (dbus_error_is_set(error)) {
@@ -70,7 +73,7 @@ static char *get_active_ap(DBusConnection *conn, const char *device_path) {
 }
 
 static void request_scan(DBusConnection *conn, const char *device_path) {
-	DBusMessage *msg, *reply;
+	DBusMessage *msg;
 	DBusError error;
 	dbus_error_init(&error);
 
@@ -81,25 +84,17 @@ static void request_scan(DBusConnection *conn, const char *device_path) {
 		"RequestScan"
 	);
 
-	// Pass an empty dict (a{sv}) as scan options
 	DBusMessageIter args;
 	DBusMessageIter dict;
+
 	dbus_message_iter_init_append(msg, &args);
 	dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY, "{sv}", &dict);
 	dbus_message_iter_close_container(&args, &dict);
 
-	reply = dbus_connection_send_with_reply_and_block(conn, msg, -1, &error);
+	dbus_connection_send(conn, msg, NULL);
+	dbus_connection_flush(conn);
+
 	dbus_message_unref(msg);
-
-	if (check_dbus_error(&error)) {
-		fprintf(stderr, "Failure occurred in 'request_scan' make sure Wi-Fi is enabled!\n");
-		return;
-	}
-
-	dbus_message_unref(reply);
-
-	// Optional: wait a bit to let the scan complete
-	sleep(10); // You can tweak or use async logic if desired
 }
 
 static char *get_ssid(DBusConnection *conn, const char *ap_path) {
@@ -145,7 +140,7 @@ static char *get_ssid(DBusConnection *conn, const char *ap_path) {
 	}
 	ssid[i] = '\0';
 
-	char *ssid_str = strdup((char *)ssid);
+	char *ssid_str = (char *)ssid;
 	if (!ssid_str) {
 		fprintf(stderr, "Memory allocation failed in 'get_ssid'!\n");
 		dbus_message_unref(reply);
@@ -154,7 +149,7 @@ static char *get_ssid(DBusConnection *conn, const char *ap_path) {
 	else {
 		dbus_message_unref(reply);
 	}
-	return ssid_str;
+	return strdup(ssid_str);
 }
 
 static size_t list_access_points(DBusConnection *conn, const char *device_path, char **ssids, size_t max) {
@@ -177,7 +172,7 @@ static size_t list_access_points(DBusConnection *conn, const char *device_path, 
 	if (check_dbus_error(&error)) {
 		fprintf(stderr, "Failure occurred in 'get_active_ap'!\n");
         dbus_message_unref(reply); // Unref reply in case of error
-		return -1;
+		return 1;
 	}
 
 	DBusMessageIter iter;
@@ -217,9 +212,11 @@ static size_t list_access_points(DBusConnection *conn, const char *device_path, 
 	size_t count = 0;
 	if (active_ssid && count < max) {
 		ssids[count++] = active_ssid;
-	} else if (active_ssid) {
+	}
+	else if (active_ssid) {
 		// Couldn’t store it, so free it
 		free(active_ssid);
+		active_ssid = NULL;
 	}
 
 	for (size_t i = 0; i < tmp_count && count < max; ++i) {
@@ -228,15 +225,17 @@ static size_t list_access_points(DBusConnection *conn, const char *device_path, 
 	for (size_t i = count; i < tmp_count; ++i) {
 		// Clean up unused SSIDs
 		free(tmp_ssids[i]);
+		tmp_ssids[i] = NULL;
 	}
 	if (active_ap) {
 		free(active_ap); // clean and safe now
+		active_ap = NULL;
 	}
 	dbus_message_unref(reply);
 	return count;
 }
 
-size_t list_wifi_devices(char **ssids, size_t max) {
+size_t list_wifi_devices(char **ssids, size_t max, bool trigger_scan) {
 	DBusMessage *msg;
 	DBusMessage *reply;
 	DBusError error;
@@ -246,7 +245,7 @@ size_t list_wifi_devices(char **ssids, size_t max) {
 
 	if (check_dbus_error(&error)) {
 		fprintf(stderr, "Failure occurred in 'list_wifi_devices'!\n");
-		return -1;
+		return 1;
 	}
 	
 	msg = dbus_message_new_method_call(NM_SERVICE,
@@ -260,7 +259,7 @@ size_t list_wifi_devices(char **ssids, size_t max) {
 
 	if (check_dbus_error(&error)) {
 		fprintf(stderr, "Failure occurred in 'list_wifi_devices 2'!\n");
-		return -1;
+		return 1;
 	}
 
 	size_t count = 0;
@@ -292,7 +291,7 @@ size_t list_wifi_devices(char **ssids, size_t max) {
 
 		if (check_dbus_error(&error)) {
 			fprintf(stderr, "Failure occurred in 'list_wifi_devices 3'!\n");
-			return -1;
+			return 1;
 		}
 
 		DBusMessageIter type_iter;
@@ -304,8 +303,13 @@ size_t list_wifi_devices(char **ssids, size_t max) {
 		dbus_message_unref(type_reply);
 
 		if (dev_type == 2) { // NM_DEVICE_TYPE_WIFI
-			request_scan(conn, device_path);
-			count += list_access_points(conn, device_path, ssids + count, max - count);
+
+			if (trigger_scan) {
+				request_scan(conn, device_path);
+			}
+			else {
+				count += list_access_points(conn, device_path, ssids + count, max - count);
+			}
 		}
 
 		dbus_message_iter_next(&array);
@@ -454,6 +458,7 @@ bool check_if_secured_ssid(char *ssid) {
 					}
 				}
 				if (ap_ssid) {
+				fprintf(stderr, "AAAAAAAAA clean ap_ssid: %s\n", ap_ssid);
 					free(ap_ssid);
 					ap_ssid = NULL;
 				}
@@ -645,7 +650,8 @@ static char *find_ap_by_ssid(DBusConnection *conn, const char *device_path, cons
 	return NULL;
 }
 
-static char *find_existing_connection(DBusConnection *conn, const char *ssid) {
+static char *find_existing_connection(DBusConnection *conn, const char *ssid) {	
+	auth_success = true; // this is used in 'refresh_networks' in panel.c
 	DBusMessage *msg = dbus_message_new_method_call(NM_SERVICE,
 													"/org/freedesktop/NetworkManager/Settings",
 													NM_SETTINGS_INTERFACE,
@@ -757,17 +763,21 @@ static char *find_existing_connection(DBusConnection *conn, const char *ssid) {
 // Connect to open network
 void connect_to_open_ssid(const char *ssid) {
 	DBusConnection *conn = connect_system_bus();
-	if (!conn) return;
+	if (!conn) {
+		return;
+	}
 
 	char *device = find_wifi_device(conn);
 	if (!device) {
 		fprintf(stderr, "No Wi-Fi device found\n");
+		dbus_connection_unref(conn);
 		return;
 	}
 
 	char *ap_path = find_ap_by_ssid(conn, device, ssid);
 	if (!ap_path) {
 		fprintf(stderr, "Access point '%s' not found\n", ssid);
+		dbus_connection_unref(conn);
 		free(device);
 		device = NULL;
 		return;
@@ -915,6 +925,88 @@ static void append_setting_string(DBusMessageIter *settings, const char *key, co
 	dbus_message_iter_close_container(settings, &item);
 }
 
+static uint32_t get_uint32_property(DBusConnection *conn, const char *path,
+										const char *interface,
+										const char *property) {
+	DBusMessage *msg, *reply;
+	DBusMessageIter iter, variant_iter;
+	DBusError err;
+	uint32_t value = 0;
+
+	dbus_error_init(&err);
+
+	// Properties.Get requires the Interface name and the Property name as arguments
+	msg = dbus_message_new_method_call("org.freedesktop.NetworkManager",
+										path,
+										"org.freedesktop.DBus.Properties",
+										"Get");
+	if (!msg) {
+		return 0;
+	}
+
+	dbus_message_append_args(msg,
+							DBUS_TYPE_STRING, &interface,
+							DBUS_TYPE_STRING, &property,
+							DBUS_TYPE_INVALID);
+
+	reply = dbus_connection_send_with_reply_and_block(conn, msg, -1, &err);
+	dbus_message_unref(msg);
+
+	if (!reply) {
+		if (dbus_error_is_set(&err)) {
+			fprintf(stderr, "DBus Error: %s\n", err.message);
+			dbus_error_free(&err);
+		}
+		return 0;
+	}
+
+	// The reply is a Variant, so we must drill down into it
+	if (dbus_message_iter_init(reply, &iter)) {
+		if (dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_VARIANT) {
+			dbus_message_iter_recurse(&iter, &variant_iter);
+			if (dbus_message_iter_get_arg_type(&variant_iter) == DBUS_TYPE_UINT32) {
+				dbus_message_iter_get_basic(&variant_iter, &value);
+			}
+		}
+	}
+
+	dbus_message_unref(reply);
+	return value;
+}
+
+static bool wait_for_connection_success(DBusConnection *conn, const char *active_path) {
+	// 0 = Unknown, 1 = Activating, 2 = Activated, 3 = Deactivating, 4 = Deactivated
+	uint32_t state = 0;
+	int timeout = 0;
+
+	while (timeout < 8) { // Wait up to 8 seconds
+		sleep(1);
+		timeout++;
+
+		// Call "Get" on "org.freedesktop.DBus.Properties" for the "State" property
+		// on the active_path
+		state = get_uint32_property(conn, active_path,
+									"org.freedesktop.NetworkManager.Connection.Active",
+									"State");
+
+		if (state == 2) return true;  // NM_ACTIVE_CONNECTION_STATE_ACTIVATED
+		if (state == 4 || state == 0) return false; // Failed or Deactivated
+	}
+	return false;
+}
+
+static void delete_connection_profile(DBusConnection *conn, const char *settings_path) {
+	DBusMessage *msg = dbus_message_new_method_call("org.freedesktop.NetworkManager",
+													settings_path,
+													"org.freedesktop.NetworkManager.Settings.Connection",
+													"Delete");
+	if (msg) {
+		// We fire and forget here, or use a short timeout
+		dbus_connection_send(conn, msg, NULL);
+		dbus_message_unref(msg);
+	}
+}
+
 void connect_to_secured_ssid(const char *ssid, char *password) {
 	DBusConnection *conn = connect_system_bus();
 	if (!conn) {
@@ -924,6 +1016,7 @@ void connect_to_secured_ssid(const char *ssid, char *password) {
 	char *device = find_wifi_device(conn);
 	if (!device) {
 		fprintf(stderr, "No Wi-Fi device found\n");
+		dbus_connection_unref(conn);
 		return;
 	}
 
@@ -932,6 +1025,7 @@ void connect_to_secured_ssid(const char *ssid, char *password) {
 		fprintf(stderr, "Access point '%s' not found\n", ssid);
 		free(device);
 		device = NULL;
+		dbus_connection_unref(conn);
 		return;
 	}
 
@@ -1049,7 +1143,32 @@ void connect_to_secured_ssid(const char *ssid, char *password) {
 			dbus_error_free(&err);
 		}
 		else {
-			printf("Successfully connected to secured network '%s'\n", ssid);
+			// ---------------------------- connection status check ---------------------------- //
+			// this block checks whether connection was succesfull (prowided password was correct)
+			// if it's correct then proceed, if not, then remove the saved/stored network profile
+			char *settings_path = NULL;
+			char *active_conn_path = NULL;
+			DBusMessageIter reply_iter;
+
+			// AddAndActivateConnection returns (o, o) -> Settings Path, Active Connection Path
+			if (dbus_message_iter_init(reply, &reply_iter)) {
+				dbus_message_iter_get_basic(&reply_iter, &settings_path);
+				dbus_message_iter_next(&reply_iter);
+				dbus_message_iter_get_basic(&reply_iter, &active_conn_path);
+
+				// Now, verify if it actually connects
+				if (!wait_for_connection_success(conn, active_conn_path)) {
+					fprintf(stderr, "Auth failed. Deleting profile: %s\n", settings_path);
+					auth_success = false;
+					delete_connection_profile(conn, settings_path);
+				}
+				else {
+					printf("Successfully connected to '%s'\n", ssid);
+					auth_success = true;
+				}
+			}
+			// ---------------------------- end of connection status check ---------------------------- //
+
 			dbus_message_unref(reply);
 		}
 		dbus_error_free(&err);
@@ -1060,4 +1179,176 @@ void connect_to_secured_ssid(const char *ssid, char *password) {
 	device = NULL;
 	ap_path = NULL;
 	dbus_connection_unref(conn);
+}
+
+/* this function returns the currently active SSID */
+char *get_active_ssid(void) {
+	DBusError err; dbus_error_init(&err);
+	DBusConnection *conn = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
+	if (!conn) {
+		fprintf(stderr, "DBus connection failed: %s\n", err.message ? err.message : "unknown");
+		dbus_error_free(&err);
+		return NULL;
+	}
+
+	char *device = find_wifi_device(conn);
+	if (!device) {
+		dbus_connection_unref(conn);
+		return NULL;
+	}
+
+	/* -------------------------------
+	   Get ActiveAccessPoint property
+	   ------------------------------- */
+
+	DBusMessage *msg = dbus_message_new_method_call(
+		"org.freedesktop.NetworkManager",
+		device,
+		"org.freedesktop.DBus.Properties",
+		"Get"
+	);
+
+	if (!msg) {
+		free(device);
+		dbus_connection_unref(conn);
+		return NULL;
+	}
+
+	const char *iface = "org.freedesktop.NetworkManager.Device.Wireless";
+	const char *prop  = "ActiveAccessPoint";
+
+	DBusMessageIter iter;
+	dbus_message_iter_init_append(msg, &iter);
+
+	dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &iface);
+	dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &prop);
+
+	DBusMessage *reply = dbus_connection_send_with_reply_and_block(conn, msg, -1, &err);
+	dbus_message_unref(msg);
+
+	if (!reply) {
+		fprintf(stderr, "Failed to read ActiveAccessPoint: %s\n", err.message ? err.message : "unknown");
+		dbus_error_free(&err);
+		free(device);
+		dbus_connection_unref(conn);
+		return NULL;
+	}
+
+	DBusMessageIter riter;
+
+	if (!dbus_message_iter_init(reply, &riter)) {
+		dbus_message_unref(reply);
+		free(device);
+		dbus_connection_unref(conn);
+		return NULL;
+	}
+
+	if (dbus_message_iter_get_arg_type(&riter) != DBUS_TYPE_VARIANT) {
+		dbus_message_unref(reply);
+		free(device);
+		dbus_connection_unref(conn);
+		return NULL;
+	}
+
+	DBusMessageIter variant;
+	dbus_message_iter_recurse(&riter, &variant);
+
+	if (dbus_message_iter_get_arg_type(&variant) != DBUS_TYPE_OBJECT_PATH) {
+		dbus_message_unref(reply);
+		free(device);
+		dbus_connection_unref(conn);
+		return NULL;
+	}
+
+	char *ap_path = NULL;
+	dbus_message_iter_get_basic(&variant, &ap_path);
+
+	dbus_message_unref(reply);
+	free(device);
+
+	if (!ap_path || strcmp(ap_path, "/") == 0) {
+		dbus_connection_unref(conn);
+		return NULL;
+	}
+
+	/* -------------------------------
+	   Get SSID from AccessPoint
+	   ------------------------------- */
+
+	msg = dbus_message_new_method_call(
+		"org.freedesktop.NetworkManager",
+		ap_path,
+		"org.freedesktop.DBus.Properties",
+		"Get"
+	);
+
+	if (!msg) {
+		dbus_connection_unref(conn);
+		return NULL;
+	}
+
+	const char *iface2 = "org.freedesktop.NetworkManager.AccessPoint";
+	const char *prop2  = "Ssid";
+
+	dbus_message_iter_init_append(msg, &iter);
+
+	dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &iface2);
+	dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &prop2);
+
+	reply = dbus_connection_send_with_reply_and_block(conn, msg, -1, &err);
+
+	dbus_message_unref(msg);
+
+	if (!reply) {
+		fprintf(stderr, "Failed to read SSID: %s\n", err.message ? err.message : "unknown");
+		dbus_error_free(&err);
+		dbus_connection_unref(conn);
+		return NULL;
+	}
+
+	if (!dbus_message_iter_init(reply, &riter)) {
+		dbus_message_unref(reply);
+		dbus_connection_unref(conn);
+		return NULL;
+	}
+
+	if (dbus_message_iter_get_arg_type(&riter) != DBUS_TYPE_VARIANT) {
+		dbus_message_unref(reply);
+		dbus_connection_unref(conn);
+		return NULL;
+	}
+
+	dbus_message_iter_recurse(&riter, &variant);
+
+	if (dbus_message_iter_get_arg_type(&variant) != DBUS_TYPE_ARRAY) {
+		dbus_message_unref(reply);
+		dbus_connection_unref(conn);
+		return NULL;
+	}
+
+	DBusMessageIter array;
+	dbus_message_iter_recurse(&variant, &array);
+
+	char ssid[256];
+	int i = 0;
+
+	while (dbus_message_iter_get_arg_type(&array) == DBUS_TYPE_BYTE && i < 255) {
+		unsigned char byte;
+		dbus_message_iter_get_basic(&array, &byte);
+
+		ssid[i++] = byte;
+
+		dbus_message_iter_next(&array);
+	}
+
+	ssid[i] = '\0';
+
+	dbus_message_unref(reply);
+	dbus_connection_unref(conn);
+
+	if (i == 0) {
+		return NULL;
+	}
+	// don't forget to free the returning string
+	return strdup(ssid);
 }

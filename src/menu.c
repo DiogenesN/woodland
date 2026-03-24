@@ -76,25 +76,25 @@ int show_menu(struct woodland_server *server) {
 																height,
 																&format);
 	if (!wlr_buffer) {
-		fprintf(stderr, "wlr_buffer failed in 'list_titles'!");
+		fprintf(stderr, "wlr_buffer failed in 'menu'!");
 		return -1;
 	}
 
 	server->menu_scene_buffer = wlr_scene_buffer_create(&server->scene->tree, wlr_buffer);
 	if (!server->menu_scene_buffer) {
-		fprintf(stderr, "wlr_scene_buffer failed in 'list_titles'!");
+		fprintf(stderr, "wlr_scene_buffer failed in 'menu'!");
 		return -1;
 	}
 
 	server->m_cairo_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
 	if (cairo_surface_status(server->m_cairo_surface) != CAIRO_STATUS_SUCCESS) {
-		fprintf(stderr, "Cairo status failed in 'list_titles'!");
+		fprintf(stderr, "Cairo status failed in 'menu'!");
 		return -1;
 	}
 
 	server->m_cr = cairo_create(server->m_cairo_surface);
 	if (cairo_status(server->m_cr) != CAIRO_STATUS_SUCCESS) {
-		fprintf(stderr, "Cairo create failed in 'list_titles'!\n");
+		fprintf(stderr, "Cairo create failed in 'menu'!\n");
 		cairo_surface_destroy(server->m_cairo_surface);
 		return -1;
 	}
@@ -117,6 +117,7 @@ int show_menu(struct woodland_server *server) {
 		for (size_t i = 0; i < num_commands; i++) {
 			///fprintf(stderr, "Menu item: %s\n", command[i]);
 			server->items[i] = command[y + i + 1];
+			// highlight currect item
 			if (i == server->menuPosition) {
 				cairo_set_source_rgb(server->m_cr, 0.4, 0.6, 0.9); // blue text
 			}
@@ -139,7 +140,7 @@ int show_menu(struct woodland_server *server) {
 																		height,
 																		(const void *)cairo_data);
 		if (!server->menu_scene_buffer->texture) {
-			fprintf(stderr, "Scene texture failed in 'list_titles'!\n");
+			fprintf(stderr, "Scene texture failed in 'menu'!\n");
 			cairo_destroy(server->m_cr);
 			cairo_surface_destroy(server->m_cairo_surface);
 			return -1;
@@ -149,9 +150,8 @@ int show_menu(struct woodland_server *server) {
 		int right_corner_x = 3;
 		int right_corner_y = output_height - height - 10;
 
-		// Set the title for the panel
-		const char *my_string = "woodland_menu";
-		server->menu_scene_buffer->node.data = (void *)my_string;
+		// Set the enum title for the menu
+		server->menu_scene_buffer->node.data = (void *)(uintptr_t)NODE_TYPE_MENU;
 
 		wlr_scene_node_set_enabled(&server->menu_scene_buffer->node, true);
 		wlr_scene_node_set_position(&server->menu_scene_buffer->node, right_corner_x, right_corner_y);
