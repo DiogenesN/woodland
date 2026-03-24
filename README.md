@@ -51,7 +51,7 @@ vivarium\
    19. Autostart applications.
    11. Menu (windowlist) showing a list of opened windows (clicking the top right corner).
    12. Menu showing a list of user defined items (clicking the bottom left corner).
-   13. Applauncher to quickly launch your favorite applicaitons.ottom left corner).
+   13. Applauncher to quickly launch your favorite applicaitons (<Super><Space>).
    14. Built-in minimal network manager.
 
 # Panel features
