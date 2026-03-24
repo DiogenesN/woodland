@@ -186,19 +186,19 @@ To disable looking for pre-installed terminal emulators, you have to set up at l
 
 # Screenshots
  Showing the menu on the bottom left and the panel on the bottom right.\
-![Alt text](https://github.com/DiogenesN/woodland/tree/main/screenshots/1.menu_panel.png)
+![Alt text](https://github.com/DiogenesN/woodland/blob/main/screenshots/1.menu_panel.png)
 
  Showing the calendar.\
-![Alt text](https://github.com/DiogenesN/woodland/tree/main/screenshots/2.calendar.png)
+![Alt text](https://github.com/DiogenesN/woodland/blob/main/screenshots/2.calendar.png))
 
  Showing the windowlist on the top right.\
-![Alt text](https://github.com/DiogenesN/woodland/tree/main/screenshots/3.windowlist.png)
+![Alt text](https://github.com/DiogenesN/woodland/blob/main/screenshots/3.windowlist.png))
 
  Showing the network manager.\
-![Alt text](https://github.com/DiogenesN/woodland/tree/main/screenshots/4.network_manager.png)
+![Alt text](https://github.com/DiogenesN/woodland/blob/main/screenshots/4.network_manager.png)
 
  Showing the applauncher.\
-![Alt text](https://github.com/DiogenesN/woodland/tree/main/screenshots/5.applauncher.png)
+![Alt text](https://github.com/DiogenesN/woodland/blob/main/screenshots/5.applauncher.png)
 
 # Configuration
 Woodland creates the following configuration files:
