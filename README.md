@@ -181,7 +181,7 @@ If you launch it without arguments for the first time then it will automatically
 		 gnome-terminal
 
 If it finds any of those installed, it will automatically launch the first one found.\
-If you have none of these installed then you can launch any installed apps by activating the applauncher by pressing <Super><Space>.
+If you have none of these installed then you can launch any installed apps by activating the applauncher by pressing Super+Space.
 To disable looking for pre-installed terminal emulators, you have to set up at least one startup command in woodland.ini.
 
 # Screenshots
