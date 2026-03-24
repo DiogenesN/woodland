@@ -184,6 +184,9 @@ If it finds any of those installed, it will automatically launch the first one f
 If you have none of these installed then you can launch any installed apps by activating the applauncher by pressing Super+Space.
 To disable looking for pre-installed terminal emulators, you have to set up at least one startup command in woodland.ini.
 
+# Video overview of my Woodland Compositor
+[![Woodland Compositor](https://img.youtube.com/vi/yf7g32gYCAw/0.jpg)](https://youtu.be/yf7g32gYCAw)
+
 # Screenshots
  Showing the menu on the bottom left and the panel on the bottom right.\
 ![Alt text](https://github.com/DiogenesN/woodland/blob/main/screenshots/1.menu_panel.png)
