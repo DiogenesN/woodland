@@ -352,7 +352,7 @@ Woodland creates the following configuration files:
     # If your app doesn't show up in the search box, you need to refresh it.
     # To refresh, type in the search box /refresh (hit Enter).
 
-Tha's it!
+That's it!
 
 # Support
 
