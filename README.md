@@ -139,34 +139,34 @@ If you want to autostart woodland without any login manager then below is a good
 
   6. Modify 'config.toml' as follows:
 
-        [terminal]
-        \# The VT to run the greeter on. Can be "next", "current" or a number
-        \# designating the VT.
-        \vt = 1
+         [terminal]
+         # The VT to run the greeter on. Can be "next", "current" or a number
+         # designating the VT.
+         vt = 1
 
-        \# The default session, also known as the greeter.
-        [default_session]
+         # The default session, also known as the greeter.
+         [default_session]
 
-        \# `agreety` is the bundled agetty/login-lookalike. You can replace `/bin/sh`
-        \# with whatever you want started, such as `sway`.
-        command = "/usr/local/bin/start-woodland"
-        \# if using wlgreet
-        \#command = "sway --config /etc/greetd/sway-config"
+         # `agreety` is the bundled agetty/login-lookalike. You can replace `/bin/sh`
+         # with whatever you want started, such as `sway`.
+         command = "/usr/local/bin/start-woodland"
+         # if using wlgreet
+         #command = "sway --config /etc/greetd/sway-config"
 
-        \# The user to run the command as. The privileges this user must have depends
-        \# on the greeter. A graphical greeter may for example require the user to be
-        \# in the `video` group.
+         # The user to run the command as. The privileges this user must have depends
+         # on the greeter. A graphical greeter may for example require the user to be
+         # in the `video` group.
          user = "YOURUSERNAME"
 
   7. Add your username to the following groups:
 
-        sudo usermod -aG input YOURUSERNAME
-        sudo usermod -aG video YOURUSERNAME
+         sudo usermod -aG input YOURUSERNAME
+         sudo usermod -aG video YOURUSERNAME
 
   8. Disable 'getty' service and enable 'greetd':
 
-        sudo systemctl disable getty@tty1
-        sudo systemctl enable greetd
+         sudo systemctl disable getty@tty1
+         sudo systemctl enable greetd
 
 # First intallation start
 
@@ -184,20 +184,20 @@ If it finds any of those installed, it will automatically launch the first one f
 If you have none of these installed then you can launch any installed apps by activating the applauncher by pressing <Super><Space>.
 To disable looking for pre-installed terminal emulators, you have to set up at least one startup command in woodland.ini.
 
-# Screenshots\
- Showing the menu on the bottom left and the panel on the bottom right.
+# Screenshots
+ Showing the menu on the bottom left and the panel on the bottom right.\
 ![Alt text](https://github.com/DiogenesN/woodland/tree/main/screenshots/1.menu_panel.png)
 
- Showing the calendar.
+ Showing the calendar.\
 ![Alt text](https://github.com/DiogenesN/woodland/tree/main/screenshots/2.calendar.png)
 
- Showing the windowlist on the top right.
+ Showing the windowlist on the top right.\
 ![Alt text](https://github.com/DiogenesN/woodland/tree/main/screenshots/3.windowlist.png)
 
- Showing the network manager.
+ Showing the network manager.\
 ![Alt text](https://github.com/DiogenesN/woodland/tree/main/screenshots/4.network_manager.png)
 
- Showing the applauncher.
+ Showing the applauncher.\
 ![Alt text](https://github.com/DiogenesN/woodland/tree/main/screenshots/5.applauncher.png)
 
 # Configuration
@@ -211,146 +211,146 @@ Woodland creates the following configuration files:
   'windows_sizes.db' is automatically written on any window closing and storing the sizes before closing.\
   'woodland.ini' is very straightforward, self-explanatory and includes the comments and examples:
 
-   \# Configuration file for woodland compositor\
+    # Configuration file for woodland compositor
 
-   [ Welcome screen ]
-   \# If you have any weclome screen application then it goes here.
-   \welcome_screen = none
+    [ Welcome screen ]
+    # If you have any weclome screen application then it goes here.
+    welcome_screen = none
 
-   [ Icon Theme ]
-   \# NOTE: To apply the theme you have to restart the compositor
-   \# The icon theme is used to provide icons for the windowlist menu
-   \# Provide the full path to your icon theme, example:
-   \# icons_theme = /usr/share/icons/Lyra-blue-dark
-   \# To disable icons, set it to: icons_theme = none
-   icons_theme = /usr/share/icons/hicolor
+    [ Icon Theme ]
+    # NOTE: To apply the theme you have to restart the compositor
+    # The icon theme is used to provide icons for the windowlist menu
+    # Provide the full path to your icon theme, example:
+    # icons_theme = /usr/share/icons/Lyra-blue-dark
+    # To disable icons, set it to: icons_theme = none
+    icons_theme = /usr/share/icons/hicolor
 
-   [ Brightness ]
-   \# d_power_path, the path to the file that controls the brightness level.
-   d_power_path = /sys/class/backlight/intel_backlight/brightness
+    [ Brightness ]
+    # d_power_path, the path to the file that controls the brightness level.
+    d_power_path = /sys/class/backlight/intel_backlight/brightness
 
-   [ Background ]
-   \# Provide the full path to the image.
-   \# The default wallpaper will be automatically set on the first launch.
-   background = /home/YOURUSERNAME/.config/woodland/icons/woodland.png
+    [ Background ]
+    # Provide the full path to the image.
+    # The default wallpaper will be automatically set on the first launch.
+    background = /home/YOURUSERNAME/.config/woodland/icons/woodland.png
 
-   [ Touchpad ]
-   \# enable or disable tap to click.
-   tap_to_click = enable
+    [ Touchpad ]
+    # enable or disable tap to click.
+    tap_to_click = enable
 
-   [ Keyboard layouts ]
-   \# Alt+Shift to switch layouts
-   \# e.g: xkb_layouts=us,de
-   xkb_layouts=us
+    [ Keyboard layouts ]
+    # Alt+Shift to switch layouts
+    # e.g: xkb_layouts=us,de
+    xkb_layouts=us
 
-   [ Multimedia keys ]
-   \# For default multimedia keys support install: playerctl, alsa-utils
-   \# or use your own commands.
-   play_pause  = playerctl play-pause
-   volume_up   = amixer set Master 3%+
-   volume_down = amixer set Master 3%-
-   volume_mute = amixer set Master toggle
+    [ Multimedia keys ]
+    # For default multimedia keys support install: playerctl, alsa-utils
+    # or use your own commands.
+    play_pause  = playerctl play-pause
+    volume_up   = amixer set Master 3%+
+    volume_down = amixer set Master 3%-
+    volume_mute = amixer set Master toggle
 
-   [ Keyboard Shortcuts ]
-   \# Modifiers names:
-   \# WLR_MODIFIER_ALT
-   \# WLR_MODIFIER_CTRL
-   \# WLR_MODIFIER_SHIFT
-   \# WLR_MODIFIER_LOGO (Super key)
-   \#
-   \# Key names here: /usr/include/xkbcommon/xkbcommon-keysyms.h
-   \#
-   \# Default shortcuts:
-   \# <Super+Esc> to log out
-   \# <Super+x> to close the current window
-   \# <Alt+Tab> to switch to the next window
-   \# <Alt+Ctrl+Tab> to switch to the previous window
-   \# <Super+Space> to open the applauncher
-   \# Example of user defined shortcuts:
-   \# NOTE: You have to preserve binding_ and command_ prefixes.
-   \#binding_thunar = WLR_MODIFIER_LOGO XKB_KEY_f
-   \#command_thunar = thunar
+    [ Keyboard Shortcuts ]
+    # Modifiers names:
+    # WLR_MODIFIER_ALT
+    # WLR_MODIFIER_CTRL
+    # WLR_MODIFIER_SHIFT
+    # WLR_MODIFIER_LOGO (Super key)
+    #
+    # Key names here: /usr/include/xkbcommon/xkbcommon-keysyms.h
+    #
+    # Default shortcuts:
+    # <Super+Esc> to log out
+    # <Super+x> to close the current window
+    # <Alt+Tab> to switch to the next window
+    # <Alt+Ctrl+Tab> to switch to the previous window
+    # <Super+Space> to open the applauncher
+    # Example of user defined shortcuts:
+    # NOTE: You have to preserve binding_ and command_ prefixes.
+    #binding_thunar = WLR_MODIFIER_LOGO XKB_KEY_f
+    #command_thunar = thunar
 
-   \# Below is an example of how to use my DMelody player with multimetia keys support
-   \# it sets the keys for the previous track, toggle pause and the next track.
-   \# dmelody controls
-   binding_dmelody_prev = WLR_MODIFIER_LOGO XKB_KEY_KP_Left
-   command_dmelody_prev = dmelody --previous
-   binding_dmelody_toggle_pause = WLR_MODIFIER_LOGO XKB_KEY_KP_Begin
-   command_dmelody_toggle_pause = dmelody --toggle-pause
-   binding_dmelody_next = WLR_MODIFIER_LOGO XKB_KEY_KP_Right
-   command_dmelody_next = dmelody --next
+    # Below is an example of how to use my DMelody player with multimetia keys support
+    # it sets the keys for the previous track, toggle pause and the next track.
+    # dmelody controls
+    binding_dmelody_prev = WLR_MODIFIER_LOGO XKB_KEY_KP_Left
+    command_dmelody_prev = dmelody --previous
+    binding_dmelody_toggle_pause = WLR_MODIFIER_LOGO XKB_KEY_KP_Begin
+    command_dmelody_toggle_pause = dmelody --toggle-pause
+    binding_dmelody_next = WLR_MODIFIER_LOGO XKB_KEY_KP_Right
+    command_dmelody_next = dmelody --next
 
-   \# And for screenshot shortcut
-   \# Screenshot interractive
-   \# takes a screenshot when pressing <Super> and <number 2> (XKB_KEY_KP_Down) on numpad.
-   binding_screenshot = WLR_MODIFIER_LOGO XKB_KEY_KP_Down
-   command_screenshot = grim
+    # And for screenshot shortcut
+    # Screenshot interractive
+    # takes a screenshot when pressing <Super> and <number 2> (XKB_KEY_KP_Down) on numpad.
+    binding_screenshot = WLR_MODIFIER_LOGO XKB_KEY_KP_Down
+    command_screenshot = grim
 
-   [ Window Placement ]
-   \# Open specified windows at the given fixed position.
-   \# to get the title and/or app_id, use wlrctl tool.
-   \# The placement model is as follows:
-   \# (declaration) window_place = (keyword) app_id: (app id) app_id (number) x (number) y
-   \# (declaration) window_place = (keyword) title: (title) title (number) x (number) y
-   \# Example of how to make 'thunar' start at position x=100 y=100:
-   \#window_place = app_id: thunar 100 100 (places thunar at x=100 y=100)
-   \# or
-   \#window_place = title: "some title" 100 100 		(places window containing title at x=100 y=100)
-   \# NOTE: Titles with spaces must be put between double quotes: e.g "New Document"
+    [ Window Placement ]
+    # Open specified windows at the given fixed position.
+    # to get the title and/or app_id, use wlrctl tool.
+    # The placement model is as follows:
+    # (declaration) window_place = (keyword) app_id: (app id) app_id (number) x (number) y
+    # (declaration) window_place = (keyword) title: (title) title (number) x (number) y
+    # Example of how to make 'thunar' start at position x=100 y=100:
+    #window_place = app_id: thunar 100 100 (places thunar at x=100 y=100)
+    # or
+    #window_place = title: "some title" 100 100 		(places window containing title at x=100 y=100)
+    # NOTE: Titles with spaces must be put between double quotes: e.g "New Document"
 
-   \# Few examples from my config:
-   \# Placing thunar
-   window_place = app_id: thunar 875 1
+    # Few examples from my config:
+    # Placing thunar
+    window_place = app_id: thunar 875 1
 
-   \# Placing mousepad
-   window_place = app_id: mousepad 870 1
+    # Placing mousepad
+    window_place = app_id: mousepad 870 1
 
-   [ Zoom ]
-   \# Zooming is activated by pressing super key and scrolling.
-   \# zoom_speed defines how fast zooming area is moving around.
-   \# zoom_edge_threshold defines the distance from the edges to start panning.
-   \# zoom_top_edge if 'enabled' then you can scroll on the left top edge to zoom.
-   zoom_speed = 0.009
+    [ Zoom ]
+    # Zooming is activated by pressing super key and scrolling.
+    # zoom_speed defines how fast zooming area is moving around.
+    # zoom_edge_threshold defines the distance from the edges to start panning.
+    # zoom_top_edge if 'enabled' then you can scroll on the left top edge to zoom.
+    zoom_speed = 0.009
 
-   [ Startup ]
-   \# Specify the startup commands.
-   \# If no startup command is specified then
-   \# it will automatically look for the following terminals:
-   \# foot, xfce4-terminal, kitty, gnome-terminal, alacritty.
-   \# Example (automatically start thunar and foot):
-   \# NOTE: the line must start with startup_command
-   \#startup_command = thunar
-   \#startup_command = foot
+    [ Startup ]
+    # Specify the startup commands.
+    # If no startup command is specified then
+    # it will automatically look for the following terminals:
+    # foot, xfce4-terminal, kitty, gnome-terminal, alacritty.
+    # Example (automatically start thunar and foot):
+    # NOTE: the line must start with startup_command
+    #startup_command = thunar
+    #startup_command = foot
 
-   [ Menu ]
-   \# Here you can specify a few items that will appear
-   \# when clicking on the left bottom corner of the screen.
-   \# mn_active_area_x/y sets the size of the clickable area on the bottom left corner.
-   mn_font_size = 22
-   mn_active_area_x = 30
-   mn_active_area_y = 30
+    [ Menu ]
+    # Here you can specify a few items that will appear
+    # when clicking on the left bottom corner of the screen.
+    # mn_active_area_x/y sets the size of the clickable area on the bottom left corner.
+    mn_font_size = 22
+    mn_active_area_x = 30
+    mn_active_area_y = 30
 
-   menu_item = Thunar
-   menu_item = thunar
-   menu_item = Reboot
-   menu_item = systemctl reboot
-   menu_item = Power Off
-   menu_item = systemctl poweroff
+    menu_item = Thunar
+    menu_item = thunar
+    menu_item = Reboot
+    menu_item = systemctl reboot
+    menu_item = Power Off
+    menu_item = systemctl poweroff
 
-   [ Windowlist ]
-   \# Clicking on the top right corner of the screen shows a window list.
-   \# wl_active_area_x/y sets the size of the clickable area on the top right corner.
-   wl_active_area_x = 5
-   wl_active_area_y = 5
+    [ Windowlist ]
+    # Clicking on the top right corner of the screen shows a window list.
+    # wl_active_area_x/y sets the size of the clickable area on the top right corner.
+    wl_active_area_x = 5
+    wl_active_area_y = 5
 
-   [ Panel ]
-   \# Hovering over the bottom right corner of the screen shows a panel.
+    [ Panel ]
+    # Hovering over the bottom right corner of the screen shows a panel.
 
-   [ Applauncher ]
-   \# Press <Super+Space> to open applauncer to run your favorite app.
-   \# If your app doesn't show up in the search box, you need to refresh it.
-   \# To refresh, type in the search box /refresh (hit Enter).
+    [ Applauncher ]
+    # Press <Super+Space> to open applauncer to run your favorite app.
+    # If your app doesn't show up in the search box, you need to refresh it.
+    # To refresh, type in the search box /refresh (hit Enter).
 
 Tha's it!
 
