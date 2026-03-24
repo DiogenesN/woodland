@@ -1,25 +1,54 @@
-woodland 2.0.5
+woodland 2.1.0
 
 Fixed bugs:
-	1. Crashing when exiting the pointer-constraint area in games
-	   (double-free caused by using wlr_pointer_constraint_v1_send_deactivated
-	   in the destroy handler).
+	1. Windowlist activating wrong windows.
 
-	2. Switching windows via Alt+Tab would not update the stack list, and
-	   attempting to close the current window with Super+x would end up
-	   closing the previous one.
+	2. Calendar always showing 31 days.
+
+	3. Some GTK apps launching in maximized and fullscreen mode.
+
+	4. QT apps not scaling properly (by adding fractional scaling).
+
+	5. GCC linker could not find local include/
+
+	6. Clicking on menu and windowlist items would activate the windows below.
+
+	7. Transient windows adopting parents sizes.
+
+	8. Popups constraints.
+
+	11. Zooming in/out would resize MPV.
+
+	12. Virtual keyboard input lag.
+
+	13. Closing a window would give focus to the wrong window.
+
+	14. Black right margin while zooming from the right corner.
 
 New features:
-	1. Maximizing windows.
+	1. Added a quick launcher/applauncher activated by <Super><Space>.
 
-	2. The top-right-corner windowlist widget clicking area can now be set
-	   by the user in woodland.ini.
+	2. Added icon support for the windowlist.
 
-	3. The bottom-left-corner menu-items clicking area can now be set by
-	   the user in woodland.ini.
-	   It is now also possible to configure the menu-items font size.
+	3. Added support for icon themes in woodland.ini.
 
-	4. The alternative path '/usr/local/include' was added for searching
-	   xkbcommon-keysyms.h.
+	4. Added default Woodland wallpaper.
 
-	5. Alt+Ctrl+Tab was added for reverse stack window switching.
+	5. Added fractional scale protocol.
+
+	6. Added modal dialogs functionality.
+
+	7. Added possword validation for network applet.
+
+Improvements:
+	1. Touchpad (debounce) scrolling and zooming.
+
+	2. Performance and memory consumption.
+
+	3. Better windows centering.
+
+	4. Focusing the proper window on closing.
+
+	5. Minimized windows are now highlighted with light gray italic font.
+	
+	

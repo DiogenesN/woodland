@@ -3,24 +3,23 @@
 # Woodland
 
 Woodland is a minimal lightweight wlroots-based window-stacking compositor for Wayland, inspired
-by Wayfire and TinyWl. This version is ported to wlroots 0.18.  Woodland was born out of the idea
+by Wayfire and TinyWl. This version is ported to wlroots 0.18. Woodland was born out of the idea
 that there was no window-stacking Wayland compositors that would also have the zooming capability
-which is crucial for me. There was only GNOME and Wayfire, the  first one is not my taste at all.
+which is crucial for me. There was only GNOME and Wayfire, the first one is not my taste at all.
 
-Zooming in GNOME is not ideal. Wayfire is great and  zooming  works  well  but I wanted to implement
-some  functionality  and  it  was  C++,  I  can  only  speak  C.  Another  concern  is longevity and
-maintainability, if tomorrow Wayfire goes away I will  remain with no options, that is why I decided
-to make my own compositor and implement all the functionality  I need  and I will  be glad if someone
-finds it useful too. Another thing, I build it on Debian  13 stable  (not testing) so a new version is
-expected once every two years (following Debian stable release cycle). Woodland has no reliance on any
-particular Desktop Environment, Desktop Shell or session. Also it does not depend on any UI toolkits such as Qt or GTK.
+Zooming in GNOME is not ideal. Wayfire is great and zooming works well but I wanted to implement
+some functionality and it was C++, I can only speak C and a bit of RUST. Another concern is longevity and
+maintainability, if tomorrow Wayfire goes away, I will have with no other options, that is why I decided
+to make my own compositor and implement all the functionality I need and I will be glad if someone
+finds it useful too. Another thing, I build it on Debian stable (not testing) so a new version is
+expected once every two years (following Debian stable release cycle).
+
+Woodland has no reliance on any particular Desktop Environment, Desktop Shell or session. Also it does not depend on any UI toolkits such as Qt or GTK. Woodland is probably one of the last traditional old-fashion desktop experience that uses a simple stacking model with no tiling capabilities.
 
 For Arch users see (thanks to TrialnError): https://aur.archlinux.org/packages/woodland
 
-Recommended quick app launcher:
+Recommended welcome screen:
 
-Application launcher:
-[diowapplauncher](https://github.com/DiogenesN/diowapplauncher)\
 Welcome Screen:
 [welcomescreen](https://github.com/DiogenesN/welcomescreen).
 
@@ -50,8 +49,10 @@ vivarium\
    8. User-defined window placement.
    9. Automatic window size save.
    19. Autostart applications.
-   11. Menu showing a list of opened windows (clicking the top right corner).
+   11. Menu (windowlist) showing a list of opened windows (clicking the top right corner).
    12. Menu showing a list of user defined items (clicking the bottom left corner).
+   13. Applauncher to quickly launch your favorite applicaitons.ottom left corner).
+   14. Built-in minimal network manager.
 
 # Panel features
 
@@ -62,8 +63,7 @@ vivarium\
    5. Network widget, clicking on it opens up a network applet.
 
 # Note
-  Makefile.in contains the gcc flag  -march=native. This will compile woodland for your CPU on this machine and will make your binary incompatible if you try to run it on other machines with a different CPU. If you want compatibility then remove this flag. 
-
+Makefile.in contains the gcc flag  -march=native. This will compile woodland for your CPU on this machine and will make your binary incompatible if you try to run it on other machines with a different CPU. If you want compatibility then remove this flag. 
 
 # Bugs
    1. If it fails to start from another Wayland compositor then make the following changes in: ~/.config/woodland/woodland.ini\
@@ -72,9 +72,11 @@ vivarium\
 
       To:\
       tap_to_click = disable
-   
-   2. Whenever you click on the network icon on the panel, the compositor would freeze for exactly 10 seconds, this is done in order to scan the available wifi networks.
-   3. At this stage the 'zwlr_layer_shell_v1' protocol is not implemented so some stuff like waybar, slurp won't work. You can still take screenshots with grim only without slurp.
+
+      NOTE: Launching from another compositor might not show the menus/panels but <Super><Space> should work to open the applauncher.
+
+   2. Whenever you type in the WIFI password in the network manager, the compositor would freeze for exactly 10 seconds, this is needed for password.
+   3. At this stage the 'zwlr_layer_shell_v1' protocol is not implemented so some stuff like waybar, slurp won't work. You can still take screenshots with grim only without slurp. If you want to take a screenshot of a particular portion of the screen, then simply zoom in and use grim.
 
 # Installation
 
@@ -112,29 +114,59 @@ vivarium\
 
 You have many options how to launch woodland (or pretty much any application).
 The simplest one is to just run woodland from a TTY or login manager.
-If you want to autostart woodland without any login manager then these are the steps:
+If you want to autostart woodland without any login manager then below is a good approach:
 
-  1. Create this file:
+  1. Install the following packages:
 
-		 sudo nano /etc/profile.d/woodland.sh
+		 sudo apt install greetd tuigreet seatd
 
-  2. The content of woodland.sh:
+  2. Create the following file:
 
-		 if [ -z $WAYLAMD_DISPLAY ] && [ "$(tty)" = "/dev/tty1" ]; then
-			exec woodland > /dev/null 2>&1
-		 fi
+		 sudo nano /usr/local/bin/start-woodland
 
-  3. Make it executable:
+  3. the content of '/usr/local/bin/start-woodland':
 
-		 sudo chmod +x /etc/profile.d/woodland.sh
+         #!/bin/sh
+         exec dbus-run-session -- /usr/local/bin/woodland
 
-  4. Modify 'getty@tty1.service' for autologin. (Disclaimer: Be cautious!!! This might be a security risk so do at your own risk.)
+  4. Make it executable:
 
-		 sudo nano /etc/systemd/system/getty.target.wants/getty@tty1.service
+		 sudo chmod +x /usr/local/bin/start-woodland
 
-  5. Find the line that starts with 'ExecStart', comment it out and add this one instead:
+  5. Edit the following configuration file:
 
-		 ExecStart=-/sbin/agetty --skip-login --nonewline --noissue --autologin YOURUSERNAME --noclear - $TERM
+         sudo nano /etc/greetd/config.toml
+
+  6. Modify 'config.toml' as follows:
+
+        [terminal]
+        \# The VT to run the greeter on. Can be "next", "current" or a number
+        \# designating the VT.
+        \vt = 1
+
+        \# The default session, also known as the greeter.
+        [default_session]
+
+        \# `agreety` is the bundled agetty/login-lookalike. You can replace `/bin/sh`
+        \# with whatever you want started, such as `sway`.
+        command = "/usr/local/bin/start-woodland"
+        \# if using wlgreet
+        \#command = "sway --config /etc/greetd/sway-config"
+
+        \# The user to run the command as. The privileges this user must have depends
+        \# on the greeter. A graphical greeter may for example require the user to be
+        \# in the `video` group.
+         user = "YOURUSERNAME"
+
+  7. Add your username to the following groups:
+
+        sudo usermod -aG input YOURUSERNAME
+        sudo usermod -aG video YOURUSERNAME
+
+  8. Disable 'getty' service and enable 'greetd':
+
+        sudo systemctl disable getty@tty1
+        sudo systemctl enable greetd
 
 # First intallation start
 
@@ -148,164 +180,179 @@ If you launch it without arguments for the first time then it will automatically
 		 xfce4-terminal
 		 gnome-terminal
 
-If it finds any of those installed, it will automatically launch the first one found.
-To disable this behavior you will need to set up at least one startup command in woodland.ini.
+If it finds any of those installed, it will automatically launch the first one found.\
+If you have none of these installed then you can launch any installed apps by activating the applauncher by pressing <Super><Space>.
+To disable looking for pre-installed terminal emulators, you have to set up at least one startup command in woodland.ini.
+
+# Screenshots\
+ Showing the menu on the bottom left and the panel on the bottom right.
+![Alt text](https://github.com/DiogenesN/woodland/tree/main/screenshots/1.menu_panel.png)
+
+ Showing the calendar.
+![Alt text](https://github.com/DiogenesN/woodland/tree/main/screenshots/2.calendar.png)
+
+ Showing the windowlist on the top right.
+![Alt text](https://github.com/DiogenesN/woodland/tree/main/screenshots/3.windowlist.png)
+
+ Showing the network manager.
+![Alt text](https://github.com/DiogenesN/woodland/tree/main/screenshots/4.network_manager.png)
+
+ Showing the applauncher.
+![Alt text](https://github.com/DiogenesN/woodland/tree/main/screenshots/5.applauncher.png)
 
 # Configuration
 Woodland creates the following configuration files:
 
+	~/.config/woodland/icons.cache
 	~/.config/woodland/woodland.ini
 	~/.config/woodland/windows_sizes.db
 
+  'icons.cache' stores the paths to all the SVG icons from the specified (or default) icon theme.\
   'windows_sizes.db' is automatically written on any window closing and storing the sizes before closing.\
-  'woodland.ini' is very straightforward and self-explanatory but we will go through each section
+  'woodland.ini' is very straightforward, self-explanatory and includes the comments and examples:
 
-  1. Welcome screen
+   \# Configuration file for woodland compositor\
 
-    [ Welcome screen ]
-    If you have any weclome screen application then it goes here,
-    for instance you can use my welcome screen application like this:\
-    welcome_screen = welcomescreen --resolution 1920x1080
+   [ Welcome screen ]
+   \# If you have any weclome screen application then it goes here.
+   \welcome_screen = none
 
-  2. Brightness
+   [ Icon Theme ]
+   \# NOTE: To apply the theme you have to restart the compositor
+   \# The icon theme is used to provide icons for the windowlist menu
+   \# Provide the full path to your icon theme, example:
+   \# icons_theme = /usr/share/icons/Lyra-blue-dark
+   \# To disable icons, set it to: icons_theme = none
+   icons_theme = /usr/share/icons/hicolor
 
-    [ Brightness ]
-    In order for backlight to work you have to do the following:
+   [ Brightness ]
+   \# d_power_path, the path to the file that controls the brightness level.
+   d_power_path = /sys/class/backlight/intel_backlight/brightness
 
-    sudo usermod -aG video $USER
-    sudo touch /etc/udev/rules.d/90-backlight.rules
-    sudo nano /etc/udev/rules.d/90-backlight.rules
-    add the following to '90-backlight.rules':
-    ACTION=="add", SUBSYSTEM=="backlight", KERNEL=="intel_backlight", RUN+="/bin/chgrp video /sys/class/backlight/intel_backlight/brightness", RUN+="/bin/chmod 664 /sys/class/backlight/intel_backlight/brightness"
+   [ Background ]
+   \# Provide the full path to the image.
+   \# The default wallpaper will be automatically set on the first launch.
+   background = /home/YOURUSERNAME/.config/woodland/icons/woodland.png
 
-     d_power_path, the path to the file that controls the brightness level.\
-     d_power_path = /sys/class/backlight/intel_backlight/brightness
+   [ Touchpad ]
+   \# enable or disable tap to click.
+   tap_to_click = enable
 
-  3. Background image
+   [ Keyboard layouts ]
+   \# Alt+Shift to switch layouts
+   \# e.g: xkb_layouts=us,de
+   xkb_layouts=us
 
-	[ Background ]
-	Provide the full path to the image.
-	background = /home/username/image.png
+   [ Multimedia keys ]
+   \# For default multimedia keys support install: playerctl, alsa-utils
+   \# or use your own commands.
+   play_pause  = playerctl play-pause
+   volume_up   = amixer set Master 3%+
+   volume_down = amixer set Master 3%-
+   volume_mute = amixer set Master toggle
 
-  4. Touchpad tap-to-click
+   [ Keyboard Shortcuts ]
+   \# Modifiers names:
+   \# WLR_MODIFIER_ALT
+   \# WLR_MODIFIER_CTRL
+   \# WLR_MODIFIER_SHIFT
+   \# WLR_MODIFIER_LOGO (Super key)
+   \#
+   \# Key names here: /usr/include/xkbcommon/xkbcommon-keysyms.h
+   \#
+   \# Default shortcuts:
+   \# <Super+Esc> to log out
+   \# <Super+x> to close the current window
+   \# <Alt+Tab> to switch to the next window
+   \# <Alt+Ctrl+Tab> to switch to the previous window
+   \# <Super+Space> to open the applauncher
+   \# Example of user defined shortcuts:
+   \# NOTE: You have to preserve binding_ and command_ prefixes.
+   \#binding_thunar = WLR_MODIFIER_LOGO XKB_KEY_f
+   \#command_thunar = thunar
 
-    [ Touchpad ]
-    Enable or disable tap to click (default enable).
-    tap_to_click = enable
+   \# Below is an example of how to use my DMelody player with multimetia keys support
+   \# it sets the keys for the previous track, toggle pause and the next track.
+   \# dmelody controls
+   binding_dmelody_prev = WLR_MODIFIER_LOGO XKB_KEY_KP_Left
+   command_dmelody_prev = dmelody --previous
+   binding_dmelody_toggle_pause = WLR_MODIFIER_LOGO XKB_KEY_KP_Begin
+   command_dmelody_toggle_pause = dmelody --toggle-pause
+   binding_dmelody_next = WLR_MODIFIER_LOGO XKB_KEY_KP_Right
+   command_dmelody_next = dmelody --next
 
-  5. Keyboard layouts
+   \# And for screenshot shortcut
+   \# Screenshot interractive
+   \# takes a screenshot when pressing <Super> and <number 2> (XKB_KEY_KP_Down) on numpad.
+   binding_screenshot = WLR_MODIFIER_LOGO XKB_KEY_KP_Down
+   command_screenshot = grim
 
-	[ Keyboard layouts ]
-	Alt+Shift to switch layouts
-	e.g: xkb_layouts=us,de
-	xkb_layouts=us,de
+   [ Window Placement ]
+   \# Open specified windows at the given fixed position.
+   \# to get the title and/or app_id, use wlrctl tool.
+   \# The placement model is as follows:
+   \# (declaration) window_place = (keyword) app_id: (app id) app_id (number) x (number) y
+   \# (declaration) window_place = (keyword) title: (title) title (number) x (number) y
+   \# Example of how to make 'thunar' start at position x=100 y=100:
+   \#window_place = app_id: thunar 100 100 (places thunar at x=100 y=100)
+   \# or
+   \#window_place = title: "some title" 100 100 		(places window containing title at x=100 y=100)
+   \# NOTE: Titles with spaces must be put between double quotes: e.g "New Document"
 
-  6. Multimedian keys
+   \# Few examples from my config:
+   \# Placing thunar
+   window_place = app_id: thunar 875 1
 
-	[ Multimedia keys ]
-	For default multimedia keys support install: playerctl, alsa-utils
-	or use your own commands.
-	play_pause  = playerctl play-pause
-	volume_up   = amixer set Master 3+
-	volume_down = amixer set Master 3-
-	volume_mute = amixer set Master toggle
+   \# Placing mousepad
+   window_place = app_id: mousepad 870 1
 
-  7. Keyboard shortcuts
+   [ Zoom ]
+   \# Zooming is activated by pressing super key and scrolling.
+   \# zoom_speed defines how fast zooming area is moving around.
+   \# zoom_edge_threshold defines the distance from the edges to start panning.
+   \# zoom_top_edge if 'enabled' then you can scroll on the left top edge to zoom.
+   zoom_speed = 0.009
 
-	[ Keyboard Shortcuts ]
-	Modifiers names:
-	WLR_MODIFIER_ALT
-	WLR_MODIFIER_CTRL
-	WLR_MODIFIER_SHIFT
-	WLR_MODIFIER_LOGO (Super key)
-		
-	Key names here: /usr/include/xkbcommon/xkbcommon-keysyms.h
-	
-	Default shortcuts:
-	<Super+Esc> to log out
-	<Super+x> to close the current window
-	<Alt+Tab> to switch to the next window
-	<Alt+Ctrl+Tab> to switch to the previous window
-	Example of user defined shortcuts:
-	NOTE: You have to preserve binding_ and command_ prefixes.
-	binding_thunar = WLR_MODIFIER_LOGO XKB_KEY_f
-	command_thunar = thunar
+   [ Startup ]
+   \# Specify the startup commands.
+   \# If no startup command is specified then
+   \# it will automatically look for the following terminals:
+   \# foot, xfce4-terminal, kitty, gnome-terminal, alacritty.
+   \# Example (automatically start thunar and foot):
+   \# NOTE: the line must start with startup_command
+   \#startup_command = thunar
+   \#startup_command = foot
 
-  8. Window placement
+   [ Menu ]
+   \# Here you can specify a few items that will appear
+   \# when clicking on the left bottom corner of the screen.
+   \# mn_active_area_x/y sets the size of the clickable area on the bottom left corner.
+   mn_font_size = 22
+   mn_active_area_x = 30
+   mn_active_area_y = 30
 
-	[ Window Placement ]
-	Open specified windows at the given fixed position.
-	to get the title and/or app_id, use wlrctl tool.
-	The placement model is as follows:
-	(declaration) window_place = (keyword) app_id: (app id) app_id (number) x (number) y
-	(declaration) window_place = (keyword) title: (title) title (number) x (number) y
-	Example of how to make 'thunar' start at position x=100 y=100:
-	window_place = app_id: thunar 100 100
-	or
-	window_place = title: "some title" 100 100
-	NOTE: Titles with spaces must be put between double quotes: e.g "New Document"
+   menu_item = Thunar
+   menu_item = thunar
+   menu_item = Reboot
+   menu_item = systemctl reboot
+   menu_item = Power Off
+   menu_item = systemctl poweroff
 
-	Placing thunar
-	window_place = app_id: thunar -15 -15
+   [ Windowlist ]
+   \# Clicking on the top right corner of the screen shows a window list.
+   \# wl_active_area_x/y sets the size of the clickable area on the top right corner.
+   wl_active_area_x = 5
+   wl_active_area_y = 5
 
-  9. Zoom
+   [ Panel ]
+   \# Hovering over the bottom right corner of the screen shows a panel.
 
-	[ Zoom ]
-	Zooming is activated by pressing super key and scrolling.
-	Another way of zooming is by scrolling ont he top left corner of the screen,
-	zoom_speed defines how fast zooming area is moving around.
-    zoom_speed = 0.009
+   [ Applauncher ]
+   \# Press <Super+Space> to open applauncer to run your favorite app.
+   \# If your app doesn't show up in the search box, you need to refresh it.
+   \# To refresh, type in the search box /refresh (hit Enter).
 
-
-  10. Autostart applications
-
-  	[ Startup ]
-	Specify the startup commands.
-	If no startup command is specified then
-	it will automatically look for the following terminals:
-	foot, xfce4-terminal, kitty, gnome-terminal, alacritty.
-	Example (automatically start thunar and foot):
-	NOTE: the line must start with startup_command
-
-	My startup applications:
-	startup_command = polari
-
-  11. Menu
-
-    [ Menu ]
-    Here you can specify a few items that will appear
-    when clicking on the left bottom corner of the screen.
-    First 'menu_item' should be the name of the application (e.g. Thunar File Manager).
-    Second 'menu_item' is the command for the application (thunar).
-    Examples:
-    menu_item = Reboot
-    menu_item = systemctl reboot
-    menu_item = Power Off
-    menu_item = systemctl poweroff
-
-	You can set the font size of menu items like this:
-	mn_font_size = 22
-
-	You can define how large is the clicking area to activate the menu:
-	mn_active_area_x = 30
-	mn_active_area_y = 30
-
-  12. Window list
-
-    [ Windowlist ]
-    Clicking on the top right corner of the screen shows a window list.
-    You can define how large is the clicking area to activate the windowlist:
-	wl_active_area_x = 3
-	wl_active_area_y = 3
-
-  13. Panel
-
-    [ Panel ]
-    Hovering over the bottom right corner of the screen shows a panel.
-    Right click on the brightness icon will switch off the screen,
-    pressing Super key will turn it back on.
-
-That is it enjoy!
+Tha's it!
 
 # Support
 
