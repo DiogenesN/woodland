@@ -189,10 +189,10 @@ To disable looking for pre-installed terminal emulators, you have to set up at l
 ![Alt text](https://github.com/DiogenesN/woodland/blob/main/screenshots/1.menu_panel.png)
 
  Showing the calendar.\
-![Alt text](https://github.com/DiogenesN/woodland/blob/main/screenshots/2.calendar.png))
+![Alt text](https://github.com/DiogenesN/woodland/blob/main/screenshots/2.calendar.png)
 
  Showing the windowlist on the top right.\
-![Alt text](https://github.com/DiogenesN/woodland/blob/main/screenshots/3.windowlist.png))
+![Alt text](https://github.com/DiogenesN/woodland/blob/main/screenshots/3.windowlist.png)
 
  Showing the network manager.\
 ![Alt text](https://github.com/DiogenesN/woodland/blob/main/screenshots/4.network_manager.png)
