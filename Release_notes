@@ -1,54 +1,14 @@
-woodland 2.1.0
+woodland 2.1.1
 
 Fixed bugs:
-	1. Windowlist activating wrong windows.
+	1. Fixed mouse not moving in games - forgot to add: wlr_relative_pointer_manager_v1_send_relative_motion.
 
-	2. Calendar always showing 31 days.
+	2. Fixed per application keyboard switching not working when zooming in too much.
 
-	3. Some GTK apps launching in maximized and fullscreen mode.
+	3. Fixed maximized apps get unmaximized when zooming in.
 
-	4. QT apps not scaling properly (by adding fractional scaling).
+	4. Fixed volume changing oppears too early when zooming in.
 
-	5. GCC linker could not find local include/
+	5. Fixed MVP overstretching beyond screen resolution.
 
-	6. Clicking on menu and windowlist items would activate the windows below.
-
-	7. Transient windows adopting parents sizes.
-
-	8. Popups constraints.
-
-	11. Zooming in/out would resize MPV.
-
-	12. Virtual keyboard input lag.
-
-	13. Closing a window would give focus to the wrong window.
-
-	14. Black right margin while zooming from the right corner.
-
-New features:
-	1. Added a quick launcher/applauncher activated by <Super><Space>.
-
-	2. Added icon support for the windowlist.
-
-	3. Added support for icon themes in woodland.ini.
-
-	4. Added default Woodland wallpaper.
-
-	5. Added fractional scale protocol.
-
-	6. Added modal dialogs functionality.
-
-	7. Added possword validation for network applet.
-
-Improvements:
-	1. Touchpad (debounce) scrolling and zooming.
-
-	2. Performance and memory consumption.
-
-	3. Better windows centering.
-
-	4. Focusing the proper window on closing.
-
-	5. Minimized windows are now highlighted with light gray italic font.
-	
-	
+	6. Fixed sizes for some transient windows (e,g Thunar copy dialog) that don't actually present themselves as transient but present themselves as normal xdg toplevels.
