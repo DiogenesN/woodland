@@ -59,35 +59,6 @@ static int check_passwd(void *data) {
 	return 0;
 }
 
-/* this is used on a timer to delay the zooming for 200 ms */
-static int finish_zoom_notify(void *data) {
-	struct woodland_server *server = data;
-	struct woodland_view *toplevel;
-
-	wl_list_for_each(toplevel, &server->toplevels, link) {
-		if (!toplevel->xdg_toplevel || !toplevel->xdg_toplevel->base->surface) continue;
-		struct wlr_surface *surface = toplevel->xdg_toplevel->base->surface;
-
-		// Clean up the double to avoid GTK4 precision crashes
-		// e.g., 1.400000003 becomes 1.4
-		double clean_scale = round(server->zoom_factor * 10.0) / 10.0;
-
-		// notify_clients about scaling factor
-		wlr_fractional_scale_v1_notify_scale(surface, clean_scale);
-
-		if (toplevel->lock_size) {
-			wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, 
-							toplevel->initial_width, 
-							toplevel->initial_height);
-			wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
-		}
-	}
-	// The timer has fired and finished its job. Clean it up.
-	wl_event_source_remove(server->zoom_timer);
-	server->zoom_timer = NULL;
-	return 0;
-}
-
 /* checks if a file by the given path actually exists 
  * usage:
  if (file_exists("/path/to/file.txt")) {
@@ -199,29 +170,41 @@ static void woodland_toplevel_center(struct woodland_view *toplevel) {
 	// the physical pixel space.
 	if (server->zoom_factor > 1.0 && 
 		toplevel_size.width == toplevel->xdg_toplevel->base->surface->current.width) {
-
 		target_w = toplevel->xdg_toplevel->base->surface->current.buffer_width;
 		target_h = toplevel->xdg_toplevel->base->surface->current.buffer_height;
 
 		// Clamp to transformed limits (fix for xfce4-terminal weird size when scaled)
 		if (target_w > server->transformed_width) {
-			// turn off to let other weird apps set normal size and centered
 			target_w = toplevel_size.width;
 			target_h = 0;
 		}
 		if (target_h > server->transformed_height) {
-			// turn off to let other weird apps set normal size and centered
 			target_w = 0;
 			target_h = toplevel_size.height;
 		}
 		if (target_w > server->transformed_width && target_h > server->transformed_height) {
-			// turn off to let other weird apps set normal size and centered
 			target_w = toplevel_size.width;
 			target_h = toplevel_size.height;
 		}
+		if ((output_box.width + toplevel_size.width) < target_w) {
+			target_w = (output_box.width + toplevel_size.width);
+			target_h = (output_box.height + toplevel_size.height);
+		}
 
 		// Force the client to accept this size so it doesn't render at "half-size"
-		woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel, (int32_t)target_w, (int32_t)target_h);
+		// if statement is needed to fix annoying bug when the screen is
+		// in a zoomed in state, opening any yad application would
+		// resize it's buffer and make it extremely large so if an
+		// app comes with a scheduled size then apply that size instead
+		// of using a pre-calculated size.
+		if (toplevel->xdg_toplevel->scheduled.width < 1) {
+			woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel, (int32_t)target_w, (int32_t)target_h);
+		}
+		else {
+			woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+							toplevel->xdg_toplevel->scheduled.width,
+							toplevel->xdg_toplevel->scheduled.height);
+		}
 		wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
 	} 
 	// Case B: Qt / Kdenlive Shadow Case
@@ -231,24 +214,45 @@ static void woodland_toplevel_center(struct woodland_view *toplevel) {
 	else if (geo->width > toplevel_size.width) {
 		target_w = geo->width;
 		target_h = geo->height;
+		woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel, (int32_t)target_w, (int32_t)target_h);
 	} 
 	// Case C: Standard Wayland Apps
 	else {
 		target_w = toplevel_size.width;
 		target_h = toplevel_size.height;
+		woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel, (int32_t)target_w, (int32_t)target_h);
 	}
 
 	// Safety Clamp
 	// Ensure the window doesn't exceed the logical dimensions of the screen
-	if (target_w > server->transformed_width) target_w = server->transformed_width;
-	if (target_h > server->transformed_height) target_h = server->transformed_height;
+	if (target_w > server->transformed_width) {
+		target_w = server->transformed_width;
+		woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel, (int32_t)target_w, (int32_t)target_h);
+	}
+	if (target_h > server->transformed_height) {
+		target_h = server->transformed_height;
+		woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel, (int32_t)target_w, (int32_t)target_h);
+	}
 
 	// Calculate Final Coordinates
 	// Subtract half the target width from the screen midpoint to find the center
-	double x = output_box.x + (server->transformed_width - target_w) / 2.0;
-	double y = output_box.y + (server->transformed_height - target_h) / 2.0;
+	// we alse need to check if an app comes with a scheduled size
+	// if it does then use the scheduled size as reference for
+	// placement This handles the edge case of yad apps extra large
+	// buffer size when launched on a zoomed in scareen.
+	double x = 0;
+	double y = 0;
+	if (toplevel->xdg_toplevel->scheduled.width < 1) {
+		x = output_box.x + (server->transformed_width - target_w) / 2.0;
+		y = output_box.y + (server->transformed_height - target_h) / 2.0;
+	}
+	else {
+		x = output_box.x + (server->transformed_width - toplevel->xdg_toplevel->scheduled.width) / 2.0;
+		y = output_box.y + (server->transformed_height - toplevel->xdg_toplevel->scheduled.height) / 2.0;
+	}
 
 	// Apply Position
+	wlr_xdg_surface_schedule_configure(toplevel->xdg_toplevel->base);
 	woodland_scene_node_set_position(toplevel, (int)round(x), (int)round(y));
 }
 
@@ -1769,13 +1773,12 @@ static void server_cursor_motion(struct wl_listener *listener, void *data) {
 	// Local cache of coordinates and dimensions
 	int cx = (int)server->cursor->x;
 	int cy = (int)server->cursor->y;
-	float zoom = server->zoom_factor;
 
 	// Pre-calculate the threshold boundaries
-	int right_boundary  = output_box.width  - (server->wl_active_area_x * zoom);
-	int top_boundary    = server->wl_active_area_y * zoom;
-	int left_boundary   = server->mn_active_area_x * zoom;
-	int bottom_boundary = output_box.height - (server->mn_active_area_y * zoom);
+	int right_boundary  = output_box.width  - (server->wl_active_area_x);
+	int top_boundary    = server->wl_active_area_y;
+	int left_boundary   = server->mn_active_area_x;
+	int bottom_boundary = output_box.height - (server->mn_active_area_y);
 
 	// Consolidated Logic
 	// Determine if we are in the "active" corners/zones first
@@ -1856,7 +1859,7 @@ static void server_cursor_motion(struct wl_listener *listener, void *data) {
 	struct wlr_scene_node *node = wlr_scene_node_at(&server->scene->tree.node, cx, cy, &nx, &ny);
 
 	// set volume change in any case whether the panel is active or not
-	server->volume_change = (ow - (ow - 3)) && (oh - (oh + 3));
+	server->volume_change = (cx > (ow - 10)) && (cy > (oh -  10));
 
 	if (node && node->data) {
 		uintptr_t type = (uintptr_t)node->data; // Cast the enum back from data
@@ -1950,6 +1953,14 @@ static void server_cursor_motion(struct wl_listener *listener, void *data) {
 
 	// Standard Wayland Motion boilerplate
 	wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x, event->delta_y);
+	// Sends relative motion used mostly in games for 360-degree mouse view
+	wlr_relative_pointer_manager_v1_send_relative_motion(server->wlr_relative_pointer_manager,
+														server->seat,
+														(uint64_t)event->time_msec * 1000,
+														event->delta_x,
+														event->delta_y,
+														event->unaccel_dx,
+														event->unaccel_dy);
 	process_cursor_motion(server, event->time_msec);
 }
 
@@ -2140,58 +2151,6 @@ static void server_cursor_axis(struct wl_listener *listener, void *data) {
 			return;
 		}
 		wlr_output_state_finish(&state);
-
-		// Update Clients (The "Smart" Loop)
-		struct woodland_view *toplevel;
-		wl_list_for_each(toplevel, &server->toplevels, link) {
-			if (!toplevel->xdg_toplevel || !toplevel->xdg_toplevel->base->surface) {
-				continue; // Robustness: Skip invalid/unmapped views
-			}
-			if (toplevel->maximized) {
-				continue; // skip maximized windows
-			}
-
-			struct wlr_surface *surface = toplevel->xdg_toplevel->base->surface;
-			struct wlr_box geom;
-			wlr_xdg_surface_get_geometry(toplevel->xdg_toplevel->base, &geom);
-
-			if (server->zoom_factor == 1.0) {
-				// Reset Case
-				toplevel->lock_size = false;
-				server->touchpad_zooming = false;
-				wlr_fractional_scale_v1_notify_scale(surface, 1.0);
-				if (server->zoom_timer) {
-					wl_event_source_remove(server->zoom_timer);
-					server->zoom_timer = NULL;
-				}
-			}
-			else {
-				// Zooming Case
-				if (!toplevel->lock_size) {
-					struct wlr_box geom;
-					wlr_xdg_surface_get_geometry(toplevel->xdg_toplevel->base, &geom);
-					toplevel->initial_width = geom.width;
-					toplevel->initial_height = geom.height;
-					toplevel->lock_size = true;
-				}
-
-				// Keep MPV/Qt sizes sane
-				if (toplevel->initial_width >= geom.width) {
-					woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel,
-													toplevel->initial_width,
-													toplevel->initial_height);
-				}
-
-				// Notify apps of scale factor
-				if (!server->zoom_timer) {
-					server->zoom_timer = wl_event_loop_add_timer(server->event_loop,
-																finish_zoom_notify,
-																server);
-					wl_event_source_timer_update(server->zoom_timer, 200); // 200ms delay
-				}
-				wl_event_source_timer_update(server->zoom_timer, 200); // 200ms delay
-			}
-		}
 
 		// Finalize UI State
 		keep_scaling_factor(server);
@@ -2603,6 +2562,18 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 		// this is needed to fix the weird behavior of some apps to maximize themselves
 		// automatically without user consent
 		toplevel->was_already_clicked = true;
+
+		// Changing keyboard layout per applicaiton
+		struct wlr_seat *seat = server->seat;
+		struct wlr_keyboard *kbd = wlr_seat_get_keyboard(seat);
+
+		if (kbd) {
+			change_keyboard_layout(server, kbd, toplevel);
+		}
+		else {
+			// If there is no keyboard, we still need to enter the surface with 0 keys
+			wlr_seat_keyboard_notify_enter(seat, surface, NULL, 0, NULL);
+		}
 
 		// Focus and activate toplevel
 		focus_toplevel(toplevel);
@@ -3145,9 +3116,23 @@ static void xdg_toplevel_request_resize(struct wl_listener *listener, void *data
 	 * client, to prevent the client from requesting this whenever they want. */
 	struct wlr_xdg_toplevel_resize_event *event = data;
 	struct woodland_view *toplevel = wl_container_of(listener, toplevel, request_resize);
-
 	if (toplevel) {
-		toplevel->resized = true;
+		// we only want to singnal a resize for the parent toplevel and if
+		// the currently resizing toplevel has the same app_id as the
+		// toplevel currently below the mouse cursor, then treat it as transient.
+		double sx = 0;
+		double sy = 0;
+		struct wlr_surface *surface = NULL;
+		struct woodland_view *toplevel_below = desktop_toplevel_at(toplevel->server,
+															toplevel->server->cursor->x,
+															toplevel->server->cursor->y,
+															&surface,
+															&sx,
+															&sy);
+		if (toplevel_below && \
+			strcmp(toplevel_below->xdg_toplevel->app_id, toplevel->xdg_toplevel->app_id) != 0) {
+			toplevel->resized = true;
+		}
 		toplevel->server->resize_edges = event->edges;
 		normalize_resize_edges(toplevel->server);
 		begin_interactive(toplevel, WOODLAND_CURSOR_RESIZE, toplevel->server->resize_edges);
@@ -3212,13 +3197,17 @@ static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
 			// Determine if this is a window we actually want to force a size on.
 			// Typically, we only want to "restore" size for toplevel parents.
 			// If it has a parent, it's a dialog/popup and should choose its own size
+
 			if (toplevel->xdg_toplevel->parent != NULL) {
 				woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel, 0, 0);
 			}
 			else {
 				// It is a toplevel window. Now check for cached config
-				char app_id_width[128];
-				char app_id_height[128];
+				double sx = 0;
+				double sy = 0;
+				char app_id_width[256];
+				char app_id_height[256];
+				struct wlr_surface *surface = NULL;
 				snprintf(app_id_width, sizeof(app_id_width), "%s_width", toplevel->app_id);
 				snprintf(app_id_height, sizeof(app_id_height), "%s_height", toplevel->app_id);
 
@@ -3227,13 +3216,35 @@ static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
 				int LastToplevelHeight = get_int_value_from_conf(toplevel->server->config_sizes,
 																app_id_height);
 
+				// This checks whether the toplevel's app_id that is
+				// currently under the mouse cursor, matches the app_id
+				// of the newly submitted toplevel for commiting. If the
+				// newly submitted toplevel has the same app_id as the 
+				// toplevel that is already active in the desktop and
+				// the mouse cursor is currently over it, then treat the
+				// newly submitted toplevel as a transient. This fixes the
+				// thunar bug that applies the same size for the copy dialog
+				// as for the main thunar dialog, this happens because the
+				// copy dialog is not set as transient by thunar but it's
+				// a standard toplevel.
+				struct woodland_view *toplevel_below = desktop_toplevel_at(toplevel->server,
+																	toplevel->server->cursor->x,
+																	toplevel->server->cursor->y,
+																	&surface,
+																	&sx,
+																	&sy);
+
+				if (toplevel_below && \
+					strcmp(toplevel_below->xdg_toplevel->app_id, toplevel->xdg_toplevel->app_id) == 0) {
+					woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel, 0, 0);
+				}
 				// If the toplevel is firt time opened then it has no records in 'windows_sizes.db
 				// and 'get_int_value_from_conf' will not find its app_id and will return 1
 				// wrongly applying width = 1 and height = 1, that's why we need to set all
 				// the initial first time opened toplevels width and height to 0. Setting it
 				// to 0 let's the toplevels apply their own size.
 				// Normalize 1 or 0 to "unset" (0,0)
-				if (LastToplevelWidth <= 1 || LastToplevelHeight <= 1) {
+				else if (LastToplevelWidth <= 1 || LastToplevelHeight <= 1) {
 					woodland_xdg_toplevel_set_size(toplevel->xdg_toplevel, 0, 0);
 				}
 				else {
@@ -3334,6 +3345,19 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 		// whether the current toplevel is a main (parent) or transient (child)
 		// we apply automatic placement for main toplevels only and skip transient
 		if (toplevel->xdg_toplevel->parent == NULL) {
+			// Checking if the currently opened toplevel has the same app_id as the toplevel
+			// currently situated below the mouse cursor. If the app_ids match then treat the
+			// latter one as transien.
+			double sx = 0;
+			double sy = 0;
+			struct wlr_surface *surface = NULL;
+			struct woodland_view *toplevel_below = desktop_toplevel_at(toplevel->server,
+																toplevel->server->cursor->x,
+																toplevel->server->cursor->y,
+																&surface,
+																&sx,
+																&sy);
+
 			// Executing window placement
 			const char *title = NULL;
 			const char *app_id = NULL;
@@ -3358,7 +3382,6 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 
 			// non-transient toplevel
 			if (!toplevel->xdg_toplevel->parent) {
-
 				bool rule_matched = false;
 				struct wlr_box toplevel_size;
 				wlr_xdg_surface_get_geometry(toplevel->xdg_toplevel->base, &toplevel_size);
@@ -3367,14 +3390,22 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 					for (size_t i = 0; i < server->window_rules->count; i++) {
 						struct window_rule *r = &server->window_rules->rules[i];
 						// prefer app_id rules
-						if (app_id && strcmp(r->id, "app_id:") == 0) {
+						if (toplevel_below == NULL && app_id && strcmp(r->id, "app_id:") == 0) {
 							if (strcmp(r->identifier, app_id) == 0) {
 								woodland_scene_node_set_position(toplevel, r->x, r->y);
 								rule_matched = true;
 								break;
 							}
 						}
-
+						else if (toplevel_below && \
+							strcmp(toplevel_below->xdg_toplevel->app_id,
+							toplevel->xdg_toplevel->app_id) != 0) {
+							if (strcmp(r->identifier, app_id) == 0) {
+								woodland_scene_node_set_position(toplevel, r->x, r->y);
+								rule_matched = true;
+								break;
+							}
+						}
 						// title rules
 						if (title && strcmp(r->id, "title:") == 0) {
 							if (strcmp(r->identifier, title) == 0) {
@@ -3714,8 +3745,7 @@ static void xdg_popup_commit(struct wl_listener *listener, void *data) {
 	 * Ensure the root surface has a valid committed size.
 	 * Width/height can be zero if something is wrong.
 	 */
-	if (root->surface->current.width <= 0 ||
-		root->surface->current.height <= 0) {
+	if (root->surface->current.width <= 0 || root->surface->current.height <= 0) {
 		return;
 	}
 
@@ -4558,11 +4588,6 @@ int main(int argc, char *argv[]) {
 	if (server.check_pssed_timer) {
 		wl_event_source_remove(server.check_pssed_timer);
 		server.check_pssed_timer = NULL;
-	}
-	wlr_log(WLR_DEBUG, "Shutting down server.zoom_timer");
-	if (server.zoom_timer) {
-		wl_event_source_remove(server.zoom_timer);
-		server.zoom_timer = NULL;
 	}
 	wlr_log(WLR_DEBUG, "Shutting down server.autostart_timer");
 	if (!server.autostart_cmd_ran && server.autostart_timer) {

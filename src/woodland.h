@@ -216,7 +216,6 @@ struct woodland_server {
 	int mn_active_area_y;
 
 	// Zooming
-	struct wl_event_source *zoom_timer;
 	int pan_x;
 	int pan_y;
 	bool touchpad_zooming;
@@ -287,9 +286,6 @@ struct woodland_view {
 	bool fullscreen;
 	bool commit_now; // we need this to commit the new size and prevent committing every second
 	bool was_already_clicked; // checks if the newly started app has had at least a single click from user
-	bool lock_size; // gets only the size on initial zoom event and skips all the following ones
-	int32_t initial_width; // stops MPV from resizing when zooming
-	int32_t initial_height;
 };
 
 struct woodland_popup {
